@@ -62,6 +62,12 @@ class BaseConfig(BaseSettings):
     AWS_SECRET_ACCESS_KEY: SecretStr = SecretStr("minioadmin")
     AWS_DEFAULT_REGION: str = "us-east-1"
 
+    # ===== WEBHOOK =====
+    WEBHOOK_URL: str = "http://localhost:8001/webhook"
+    WEBHOOK_SECRET_KEY: SecretStr = SecretStr("your_webhook_secret_key_here")
+    WEBHOOK_TIMEOUT_SECONDS: int = 5  # Timeout for webhook requests in seconds
+    WEBHOOK_MAX_RETRIES: int = 3  # Maximum number of retry attempts for
+
     @field_validator(
         "PORT", "POSTGRES_PORT", "REDIS_PORT", "AWS_S3_PORT", mode="before"
     )

@@ -38,14 +38,14 @@ class UploadResultExtraArgs:
 
 
 @dataclass(slots=True, kw_only=True)
-class LogStorageUploadResult:
+class S3StorageUploadResult:
     attempts: int
     error: str | None = field(
         default=None, metadata={"description": "Error message if upload failed."}
     )
     s3_key: str | None = field(
-        default=None, metadata={"description": "S3 key where the task logs are stored."}
+        default=None, metadata={"description": "S3 key where the file is stored."}
     )
     s3_url: str | None = field(
-        default=None, metadata={"description": "S3 URL where the task logs are stored."}
+        default=None, metadata={"description": "S3 URL where the file is stored."}
     )

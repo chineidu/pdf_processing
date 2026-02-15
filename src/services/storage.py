@@ -12,7 +12,7 @@ from botocore.exceptions import BotoCoreError, ClientError
 from src import create_logger
 from src.config import app_config, app_settings
 from src.schemas.services.storage import (
-    LogStorageUploadResult,
+    S3StorageUploadResult,
     S3UploadMetadata,
     UploadResultExtraArgs,
 )
@@ -22,6 +22,7 @@ MAX_ATTEMPTS: int = 3
 MAX_FILE_SIZE_BYTES = app_config.pdf_processing_config.max_file_size_bytes
 
 
+# ---- Helper functions for S3 operations ----
 def _upload_to_s3(
     client: Any,
     filepath: str | Path,
@@ -105,6 +106,25 @@ def _get_s3_stream(client: Any, bucket_name: str, key: str) -> Any:
         raise
 
 
+def _generate_presigned_url(
+    client: Any, bucket_name: str, object_name: str, expiration: int = 3600
+) -> str:
+    """Generate a presigned URL for the given S3 object."""
+    try:
+        return client.generate_presigned_url(
+            "get_object",
+            Params={"Bucket": bucket_name, "Key": object_name},
+            ExpiresIn=expiration,
+        )
+    except ClientError as e:
+        logger.error(f"Failed to generate presigned URL: {e}")
+        raise
+    except Exception as e:
+        logger.error(f"Unexpected error generating presigned URL: {e}")
+        raise
+
+
+# ---- S3 Storage Service and Policy Classes ----
 class S3StorageService:
     """
     Service for uploading, downloading, and deleting files from S3-compatible storage.
@@ -288,6 +308,17 @@ class S3StorageService:
         object_name: str = self.get_object_name(task_id)
         return f"{self.s3_client.meta.endpoint_url}/{self.bucket_name}/{object_name}"
 
+    async def aget_presigned_url(self, task_id: str, expiration: int = 3600) -> str:
+        """Asynchronously get a presigned URL for the given task ID."""
+        object_name = self.get_object_name(task_id)
+        return await asyncio.to_thread(
+            _generate_presigned_url,
+            self.s3_client,
+            self.bucket_name,
+            object_name,
+            expiration,
+        )
+
     async def _aupload_to_s3(
         self,
         filepath: str | Path,
@@ -319,8 +350,9 @@ class S3StorageService:
         )
 
 
-class S3StorageLogUploadPolicy:
-    """Policy class for handling S3 log uploads."""
+# --- S3 File Upload Policy Class with Retry Logic ---
+class S3StorageFileUploadPolicy:
+    """Policy class for handling S3 file uploads."""
 
     def __init__(
         self,
@@ -329,7 +361,7 @@ class S3StorageLogUploadPolicy:
         base_delay: float = 1.0,
         raise_on_failure: bool = False,
     ) -> None:
-        """Initialize the S3LogUploadPolicy.
+        """Initialize the S3FileUploadPolicy.
 
         Parameters
         ----------
@@ -354,7 +386,7 @@ class S3StorageLogUploadPolicy:
         correlation_id: str,
         environment: str,
         max_allowed_size_bytes: int = MAX_FILE_SIZE_BYTES,
-    ) -> LogStorageUploadResult:
+    ) -> S3StorageUploadResult:
         """Upload a file to S3 with retry logic.
 
         Parameters
@@ -373,8 +405,8 @@ class S3StorageLogUploadPolicy:
 
         Returns
         -------
-        LogStorageUploadResult
-            _description_
+        S3StorageUploadResult
+            Result of the upload attempt, including success status and any error messages.
         """
         last_exception: Exception | None = None
 
@@ -388,7 +420,7 @@ class S3StorageLogUploadPolicy:
                     max_allowed_size_bytes=max_allowed_size_bytes,
                 )
                 if success:
-                    return LogStorageUploadResult(
+                    return S3StorageUploadResult(
                         attempts=attempt,
                         s3_key=self.storage_service.get_object_name(task_id),
                         s3_url=self.storage_service.get_s3_object_url(task_id),
@@ -414,7 +446,7 @@ class S3StorageLogUploadPolicy:
         if self.raise_on_failure and last_exception is not None:
             raise last_exception
 
-        return LogStorageUploadResult(
+        return S3StorageUploadResult(
             attempts=self.max_attempts,
             error=error_message,
         )
