@@ -1,0 +1,27 @@
+config:
+  api_config:
+    title: ML Router API
+    name: "${.title}"
+    description: A Learning-Focused API Router for Machine Learning Models
+    version: v1.0.0
+    status: healthy
+    prefix: /api/v1
+    auth_prefix: "${.prefix}/auth"
+    middleware:
+      cors:
+        allow_origins:
+          - "*"
+        allow_credentials: true
+        allow_methods:
+          - "*"
+        allow_headers:
+          - "*"
+
+  database_config:
+    pool_size: 30
+    max_overflow: 10 # Allow N extra connections
+    pool_timeout: 20 # Wait N seconds for connection
+    pool_recycle: 1800 # Recycle connections after 30 minutes
+    pool_pre_ping: true # Test connections before use
+    echo: false
+    expire_on_commit: false # False for async implementations
