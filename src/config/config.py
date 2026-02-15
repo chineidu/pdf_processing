@@ -1,6 +1,5 @@
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any
 
 from omegaconf import DictConfig, OmegaConf
 from pydantic import BaseModel, Field
@@ -49,13 +48,6 @@ class APIConfig:
     middleware: Middleware = field(
         metadata={"description": "Middleware configuration."}
     )
-    ratelimit: dict[str, dict[str, Any]] = field(
-        metadata={"description": "Ratelimit configuration."}
-    )
-    credit_costs: dict[str, float] = field(
-        default_factory=dict,
-        metadata={"description": "Per-endpoint credit cost overrides."},
-    )
 
 
 @dataclass(slots=True, kw_only=True)
@@ -83,12 +75,38 @@ class DatabaseConfig:
     )
 
 
+@dataclass(slots=True, kw_only=True)
+class PDFProcessingConfig:
+    """PDF processing configuration class."""
+
+    max_num_pages: int = field(
+        default=20,
+        metadata={
+            "description": "Maximum number of pages to process in a PDF document."
+        },
+    )
+    max_file_size_bytes: int = field(
+        default=10 * 1024 * 1024,  # 10 MB
+        metadata={"description": "Maximum file size in bytes for PDF processing."},
+    )
+    perform_ocr: bool = field(
+        default=False,
+        metadata={"description": "Whether to perform OCR on PDF documents."},
+    )
+    use_gpu: bool = field(
+        default=True, metadata={"description": "Whether to use GPU for OCR processing."}
+    )
+
+
 class AppConfig(BaseModel):
     """Application configuration with validation."""
 
     api_config: APIConfig = Field(description="Configuration settings for the API")
     database_config: DatabaseConfig = Field(
         description="Configuration settings for the database"
+    )
+    pdf_processing_config: PDFProcessingConfig = Field(
+        description="Configuration settings for PDF processing"
     )
 
 

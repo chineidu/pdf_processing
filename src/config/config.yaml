@@ -1,8 +1,8 @@
 config:
   api_config:
-    title: ML Router API
+    title: PDF Processing API
     name: "${.title}"
-    description: A Learning-Focused API Router for Machine Learning Models
+    description: A robust API for processing PDF documents, extracting text, and performing OCR operations.
     version: v1.0.0
     status: healthy
     prefix: /api/v1
@@ -25,3 +25,9 @@ config:
     pool_pre_ping: true # Test connections before use
     echo: false
     expire_on_commit: false # False for async implementations
+
+  pdf_processing_config:
+    max_num_pages: 20
+    max_file_size_bytes: 10485760 # 10*1024*1024 # 10MB
+    perform_ocr: false
+    use_gpu: true

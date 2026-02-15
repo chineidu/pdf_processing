@@ -1,5 +1,6 @@
 import os
 from pathlib import Path
+from typing import Literal
 from urllib.parse import quote
 
 from dotenv import load_dotenv
@@ -48,7 +49,22 @@ class BaseConfig(BaseSettings):
     OTEL_EXPORTER_OTLP_ENDPOINT: str = ""  # e.g., "http://localhost:4317"
     OTEL_CONSOLE_EXPORTER_ENABLED: bool = False
 
-    @field_validator("PORT", "POSTGRES_PORT", "REDIS_PORT", mode="before")
+    # ===== HUGGING FACE =====
+    HF_HUB_OFFLINE: int = 1  # Set to 1 to enable offline mode and use cached models
+    HF_HUB_DOWNLOAD_TIMEOUT: int = 30  # Timeout for downloading models
+    TESSDATA_PREFIX: str = "/opt/homebrew/opt/tesseract/share/tessdata"
+
+    # ===== AWS S3 / MINIO =====
+    AWS_S3_HOST: str = "localhost"
+    AWS_S3_PORT: int = 9000
+    AWS_S3_BUCKET: str = "pdf-processor"
+    AWS_ACCESS_KEY_ID: SecretStr = SecretStr("minioadmin")
+    AWS_SECRET_ACCESS_KEY: SecretStr = SecretStr("minioadmin")
+    AWS_DEFAULT_REGION: str = "us-east-1"
+
+    @field_validator(
+        "PORT", "POSTGRES_PORT", "REDIS_PORT", "AWS_S3_PORT", mode="before"
+    )
     @classmethod
     def parse_port_fields(cls, v: str | int) -> int:
         """Parses port fields to ensure they are integers."""
@@ -103,10 +119,43 @@ class BaseConfig(BaseSettings):
             url = f"redis://{self.REDIS_HOST}:{self.REDIS_PORT}/{self.REDIS_DB}"
         return url
 
+    @property
+    def aws_s3_endpoint_url(self) -> str:
+        """
+        Constructs the AWS S3 endpoint URL.
 
+        Returns
+        -------
+        str
+            Complete AWS S3 endpoint URL in the format:
+            http(s)://host:port
+        """
+        scheme: Literal["http", "https"] = (
+            "https" if self.ENV == EnvironmentEnum.PRODUCTION else "http"
+        )
+        url: str = f"{scheme}://{self.AWS_S3_HOST}:{self.AWS_S3_PORT}"
+        return url
+
+
+# ---- Helper functions for environment setup ----
 def setup_env() -> None:
     """Sets environment variables."""
     pass
+
+
+def _setup_environment() -> None:
+    """Set environment variables for offline mode, timeouts, and parallel processing."""
+
+    # Force offline mode to use cached models and avoid network delays
+    # Set to "0" if you need to download models for the first time
+    os.environ["HF_HUB_OFFLINE"] = str(app_settings.HF_HUB_OFFLINE)
+
+    # Set a reasonable timeout for any remaining network operations (in seconds)
+    os.environ["HF_HUB_DOWNLOAD_TIMEOUT"] = str(app_settings.HF_HUB_DOWNLOAD_TIMEOUT)
+
+    # Set Tesseract data directory path for tesserocr OCR engine
+    # On macOS with Homebrew, this is typically /opt/homebrew/opt/tesseract/share/tessdata
+    os.environ["TESSDATA_PREFIX"] = app_settings.TESSDATA_PREFIX
 
 
 class DevelopmentConfig(BaseConfig):

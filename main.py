@@ -1,6 +1,3 @@
-def main():
-    print("Hello from pdf-processing!")
+from src.config import app_config
 
-
-if __name__ == "__main__":
-    main()
+print(app_config)
