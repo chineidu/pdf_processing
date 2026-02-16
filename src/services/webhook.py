@@ -25,6 +25,19 @@ class WebhookService:
         self.max_retries = app_settings.WEBHOOK_MAX_RETRIES
         self.timeout = app_settings.WEBHOOK_TIMEOUT_SECONDS
 
+        # Single client instance for connection pooling and efficiency
+        self.client = httpx.AsyncClient(
+            timeout=self.timeout,
+            limits=httpx.Limits(
+                max_connections=20,
+                max_keepalive_connections=10,
+            ),
+        )
+
+    async def aclose(self) -> None:
+        """Close the HTTP client session."""
+        await self.client.aclose()
+
     def generate_signature(self, payload: str) -> str:
         """Generate HMAC signature for the given payload."""
         return hmac.new(self.secret_key, payload.encode(), hashlib.sha256).hexdigest()
@@ -33,6 +46,7 @@ class WebhookService:
         """Asynchronously send a webhook notification with retries."""
         payload_str = json.dumps(payload)
         signature = self.generate_signature(payload_str)
+
         headers = {
             "Content-Type": "application/json",
             "X-Webhook-Signature": signature,
@@ -41,32 +55,30 @@ class WebhookService:
             else "task.failed",
         }
 
-        async with httpx.AsyncClient() as client:
-            for attempt in range(1, self.max_retries + 1):
-                try:
-                    response = await client.post(
-                        self.webhook_url,
-                        data=payload,
-                        headers=headers,
-                        timeout=self.timeout,
-                    )
-                    response.raise_for_status()
-                    logger.info(f"Webhook sent successfully on attempt {attempt}")
-                    return True
+        for attempt in range(1, self.max_retries + 1):
+            try:
+                response = await self.client.post(
+                    self.webhook_url,
+                    data=payload,
+                    headers=headers,
+                )
+                response.raise_for_status()
+                logger.info(f"Webhook sent successfully on attempt {attempt}")
+                return True
 
-                except httpx.HTTPStatusError as e:
-                    logger.error(
-                        f"HTTP error on attempt {attempt}: {e.response.status_code} - {e.response.text}"
-                    )
-                except httpx.RequestError as e:
-                    logger.error(f"Request error on attempt {attempt}: {e}")
-                except Exception as e:
-                    logger.error(f"Unexpected error on attempt {attempt}: {e}")
+            except httpx.HTTPStatusError as e:
+                logger.error(
+                    f"HTTP error on attempt {attempt}: {e.response.status_code} - {e.response.text}"
+                )
+            except httpx.RequestError as e:
+                logger.error(f"Request error on attempt {attempt}: {e}")
+            except Exception as e:
+                logger.error(f"Unexpected error on attempt {attempt}: {e}")
 
-                if attempt < self.max_retries:
-                    delay = 2**attempt
-                    logger.info(f"Retrying webhook in {delay} seconds...")
-                    await asyncio.sleep(delay)
+            if attempt < self.max_retries:
+                delay = 2**attempt
+                logger.info(f"Retrying webhook in {delay} seconds...")
+                await asyncio.sleep(delay)
 
         # If we exhaust all retries, log the failure
         logger.error(f"Failed to send webhook after {self.max_retries} attempts.")

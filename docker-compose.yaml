@@ -1,0 +1,198 @@
+services:
+  database:
+    image: postgres:17.5-bookworm
+    env_file:
+      - .env
+    ports:
+      - "5432:5432"
+    volumes:
+      - db_volume:/var/lib/postgresql/data
+      # Mount initialization script to create API database or other needed DBs
+      # Please ensure the script has proper permissions (e.g., chmod +x)
+      # Run for the 1st time ONLY: chmod +x docker/init_databases.sh
+      - type: bind
+        source: ./docker/init_databases.sh
+        target: /docker-entrypoint-initdb.d/init_databases.sh
+        read_only: true
+    healthcheck:
+      test: pg_isready -U ${POSTGRES_USER:-taskflow} -d ${POSTGRES_DB:-taskflow_db}
+      interval: 5s
+      retries: 5
+    networks:
+      - default
+    restart: unless-stopped
+
+  local-rabbitmq: # 1st service
+    image: rabbitmq:4.1.2-management
+    container_name: local-rabbitmq
+    env_file: # Location of file(s) containing the env vars. Only accessed by the container.
+      - .env
+    ports:
+      - 5672:5672
+      - 15672:15672
+    volumes: # Persist the data volume
+      - rabbitmq_data:/var/lib/rabbitmq
+      # Volume mapping for the config file
+      # It contains the RabbitMQ configuration
+      - ./rabbitmq.conf:/etc/rabbitmq/rabbitmq.conf
+    healthcheck:
+      test: ["CMD", "rabbitmq-diagnostics", "check_port_connectivity"]
+      interval: 30s
+      timeout: 10s
+      retries: 10
+      start_period: 30s
+    restart: unless-stopped
+
+  # Redis for caching
+  redis:
+    image: redis:8.2.3-bookworm
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+      - type: bind
+        source: ./docker/redis.conf
+        target: /usr/local/etc/redis/redis.conf
+        read_only: true
+    command: redis-server /usr/local/etc/redis/redis.conf
+    healthcheck:
+      test: ["CMD", "redis-cli", "-a", "redis", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+    restart: unless-stopped
+
+  # For Redis GUI management
+  redisinsight:
+    image: redis/redisinsight:latest
+    ports:
+      - "5540:5540"
+    depends_on:
+      - redis
+    # Connection URL:
+    # redis://:<password>@<host>:<port>/<db_number>
+    # e.g. redis://:redis@redis:6379/0
+    # Note: Use `redis` instead of `localhost` when connecting from within another container
+
+  # MinIO for S3-compatible storage
+  minio:
+    image: minio/minio:latest
+    platform: linux/arm64
+    command: server /data --console-address ":9001"
+    env_file:
+      - .env
+    environment:
+      - MINIO_ROOT_USER=${AWS_ACCESS_KEY_ID}
+      - MINIO_ROOT_PASSWORD=${AWS_SECRET_ACCESS_KEY}
+    ports:
+      - "9000:9000"
+      - "9001:9001"
+    volumes:
+      - minio_data:/data
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:9000/minio/health/live"]
+      interval: 30s
+      timeout: 20s
+      retries: 3
+    restart: unless-stopped
+
+  # Create MLflow bucket in MinIO
+  minio-mc:
+    image: minio/mc:latest
+    platform: linux/arm64
+    env_file:
+      - .env
+    depends_on:
+      - minio
+    entrypoint: >
+      bin/sh -c "
+      until mc alias set myminio http://minio:9000 $MINIO_ROOT_USER $MINIO_ROOT_PASSWORD; do
+        sleep 2;
+      done;
+
+      mc exec myminio -- mkdir -p /data/minio-events;
+
+      mc mb myminio/$AWS_S3_BUCKET || true;
+      mc anonymous set private myminio/$AWS_S3_BUCKET;
+
+      mc admin config set myminio notify_webhook:webhook1 \
+        endpoint='https://api.yourdomain.com/webhooks/minio' \
+        queue_dir='/data/minio-events' \
+        queue_limit='100000';
+
+      mc admin service restart myminio;
+
+      mc event add myminio/$AWS_S3_BUCKET \
+        arn:minio:sqs::webhook1:webhook \
+        --event put;
+
+      exit 0;
+      "
+
+  api:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    command: >
+      python -m src.api.app
+    ports:
+      - "8000:8000"
+    env_file:
+      - .env
+    volumes:
+      # Mount source code as read-only for live updates without rebuilding
+      - ./src:/app/src:ro
+    environment:
+      # Override database host for Docker networking
+      RABBITMQ_HOST: local-rabbitmq
+      POSTGRES_HOST: database
+      REDIS_HOST: redis
+      AWS_S3_HOST: minio
+    depends_on:
+      database: # This service is the MOST important dependency
+        condition: service_healthy
+      local-rabbitmq:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      minio:
+        condition: service_healthy
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
+      interval: 10s
+      retries: 5
+
+  worker:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    command: python -m src.rabbitmq.consumer
+    # OR CLI: docker compose up --scale worker=2
+    scale: 2
+    env_file:
+      - .env
+    volumes:
+      # Mount source code as read-only for live updates without rebuilding
+      - ./src:/app/src:ro
+    environment:
+      # Override database host for Docker networking
+      RABBITMQ_HOST: local-rabbitmq
+      POSTGRES_HOST: database
+      AWS_S3_HOST: minio
+    depends_on:
+      database: # This service is the MOST important dependency
+        condition: service_healthy
+      local-rabbitmq:
+        condition: service_healthy
+      minio:
+        condition: service_healthy
+    restart: unless-stopped
+
+# Named volumes ONLY!
+# Persist data outside the lifecycle of the container.
+volumes:
+  db_volume:
+  rabbitmq_data:
+  redis_data:
+  minio_data:
