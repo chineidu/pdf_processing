@@ -102,6 +102,9 @@ services:
     platform: linux/arm64
     env_file:
       - .env
+    environment:
+      - MINIO_ROOT_USER=${AWS_ACCESS_KEY_ID}
+      - MINIO_ROOT_PASSWORD=${AWS_SECRET_ACCESS_KEY}
     depends_on:
       - minio
     entrypoint: >
@@ -112,82 +115,82 @@ services:
 
       mc exec myminio -- mkdir -p /data/minio-events;
 
-      mc mb myminio/$AWS_S3_BUCKET || true;
-      mc anonymous set private myminio/$AWS_S3_BUCKET;
+      mc mb myminio/${AWS_S3_BUCKET} || true;
+      mc anonymous set private myminio/${AWS_S3_BUCKET};
 
       mc admin config set myminio notify_webhook:webhook1 \
-        endpoint='https://api.yourdomain.com/webhooks/minio' \
+        endpoint='https://api.yourdomain.com/webhooks/storage' \
         queue_dir='/data/minio-events' \
         queue_limit='100000';
 
       mc admin service restart myminio;
 
-      mc event add myminio/$AWS_S3_BUCKET \
+      mc event add myminio/${AWS_S3_BUCKET} \
         arn:minio:sqs::webhook1:webhook \
         --event put;
 
       exit 0;
       "
 
-  api:
-    build:
-      context: .
-      dockerfile: Dockerfile
-    command: >
-      python -m src.api.app
-    ports:
-      - "8000:8000"
-    env_file:
-      - .env
-    volumes:
-      # Mount source code as read-only for live updates without rebuilding
-      - ./src:/app/src:ro
-    environment:
-      # Override database host for Docker networking
-      RABBITMQ_HOST: local-rabbitmq
-      POSTGRES_HOST: database
-      REDIS_HOST: redis
-      AWS_S3_HOST: minio
-    depends_on:
-      database: # This service is the MOST important dependency
-        condition: service_healthy
-      local-rabbitmq:
-        condition: service_healthy
-      redis:
-        condition: service_healthy
-      minio:
-        condition: service_healthy
-    restart: unless-stopped
-    healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
-      interval: 10s
-      retries: 5
+  # api:
+  #   build:
+  #     context: .
+  #     dockerfile: Dockerfile
+  #   command: >
+  #     python -m src.api.app
+  #   ports:
+  #     - "8000:8000"
+  #   env_file:
+  #     - .env
+  #   volumes:
+  #     # Mount source code as read-only for live updates without rebuilding
+  #     - ./src:/app/src:ro
+  #   environment:
+  #     # Override database host for Docker networking
+  #     RABBITMQ_HOST: local-rabbitmq
+  #     POSTGRES_HOST: database
+  #     REDIS_HOST: redis
+  #     AWS_S3_HOST: minio
+  #   depends_on:
+  #     database: # This service is the MOST important dependency
+  #       condition: service_healthy
+  #     local-rabbitmq:
+  #       condition: service_healthy
+  #     redis:
+  #       condition: service_healthy
+  #     minio:
+  #       condition: service_healthy
+  #   restart: unless-stopped
+  #   healthcheck:
+  #     test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
+  #     interval: 10s
+  #     retries: 5
 
-  worker:
-    build:
-      context: .
-      dockerfile: Dockerfile
-    command: python -m src.rabbitmq.consumer
-    # OR CLI: docker compose up --scale worker=2
-    scale: 2
-    env_file:
-      - .env
-    volumes:
-      # Mount source code as read-only for live updates without rebuilding
-      - ./src:/app/src:ro
-    environment:
-      # Override database host for Docker networking
-      RABBITMQ_HOST: local-rabbitmq
-      POSTGRES_HOST: database
-      AWS_S3_HOST: minio
-    depends_on:
-      database: # This service is the MOST important dependency
-        condition: service_healthy
-      local-rabbitmq:
-        condition: service_healthy
-      minio:
-        condition: service_healthy
-    restart: unless-stopped
+  # worker:
+  #   build:
+  #     context: .
+  #     dockerfile: Dockerfile
+  #   command: python -m src.rabbitmq.consumer
+  #   # OR CLI: docker compose up --scale worker=2
+  #   scale: 2
+  #   env_file:
+  #     - .env
+  #   volumes:
+  #     # Mount source code as read-only for live updates without rebuilding
+  #     - ./src:/app/src:ro
+  #   environment:
+  #     # Override database host for Docker networking
+  #     RABBITMQ_HOST: local-rabbitmq
+  #     POSTGRES_HOST: database
+  #     AWS_S3_HOST: minio
+  #   depends_on:
+  #     database: # This service is the MOST important dependency
+  #       condition: service_healthy
+  #     local-rabbitmq:
+  #       condition: service_healthy
+  #     minio:
+  #       condition: service_healthy
+  #   restart: unless-stopped
 
 # Named volumes ONLY!
 # Persist data outside the lifecycle of the container.

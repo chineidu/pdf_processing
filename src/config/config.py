@@ -1,5 +1,6 @@
 from dataclasses import dataclass, field
 from pathlib import Path
+from typing import Any
 
 from omegaconf import DictConfig, OmegaConf
 from pydantic import BaseModel, Field
@@ -98,6 +99,20 @@ class PDFProcessingConfig:
     )
 
 
+@dataclass(slots=True, kw_only=True)
+class EndpointPoliciesConfig:
+    """Configuration for endpoint policies such as rate limits and credit costs."""
+
+    ratelimits: dict[str, dict[str, Any]] = field(
+        default_factory=dict,
+        metadata={"description": "Rate limit configuration for different user roles."},
+    )
+    credit_costs: dict[str, float] = field(
+        default_factory=dict,
+        metadata={"description": "Credit costs for different API endpoints."},
+    )
+
+
 class AppConfig(BaseModel):
     """Application configuration with validation."""
 
@@ -107,6 +122,9 @@ class AppConfig(BaseModel):
     )
     pdf_processing_config: PDFProcessingConfig = Field(
         description="Configuration settings for PDF processing"
+    )
+    endpoint_policies_config: EndpointPoliciesConfig = Field(
+        description="Configuration settings for endpoint policies"
     )
 
 

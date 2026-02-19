@@ -1,4 +1,4 @@
-"""S3/MinIO storage service for managing task execution logs."""
+"""S3/MinIO storage service for managing cloud storage operations."""
 
 import asyncio
 from datetime import datetime, timezone
@@ -301,7 +301,7 @@ class S3StorageService:
 
     def get_object_name(self, task_id: str) -> str:
         """Get the S3 object name for a given task ID."""
-        return f"logs/{task_id}.log"
+        return f"uploads/{task_id}.pdf"
 
     def get_s3_object_url(self, task_id: str) -> str:
         """Get the S3 object URL format."""
