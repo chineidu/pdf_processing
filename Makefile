@@ -93,7 +93,7 @@ api-run-gunicorn:
 
 worker-run:
 	@echo "🚀 Starting Celery worker..."
-	@uv run -m src.workers.worker
+	@uv run worker.py
 
 .PHONY: check-port kill-port
 # ===============================

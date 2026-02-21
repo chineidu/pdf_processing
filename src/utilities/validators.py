@@ -11,7 +11,7 @@ import magic
 from fastapi import UploadFile
 
 from src import create_logger
-from src.schemas.types import DocumentValidationResult
+from src.schemas.types import DocumentValidationResult, MimeTypeEnum
 
 logger = create_logger(__name__)
 
@@ -21,11 +21,11 @@ class DocumentValidator:
     MAGIC_HEADER_BYTES = 2048
 
     # Map extensions to valid MIME types
-    ALLOWED_MIME_TYPES: dict[str, set[str]] = {
-        ".pdf": {"application/pdf"},
-        ".txt": {"text/plain"},
+    ALLOWED_MIME_TYPES: dict[str, set[MimeTypeEnum]] = {
+        ".pdf": {MimeTypeEnum.PDF},
+        ".txt": {MimeTypeEnum.TEXT},
         # JSON is often detected as text/plain by libmagic since it is UTF-8 text
-        ".json": {"application/json", "text/plain"},
+        ".json": {MimeTypeEnum.JSON, MimeTypeEnum.TEXT},
     }
 
     def __init__(self, max_size: int = 10 * 1024 * 1024) -> None:
@@ -124,7 +124,9 @@ class DocumentValidator:
             return result
 
         detected_mime = magic.from_buffer(header, mime=True)
-        allowed_mimes = self.ALLOWED_MIME_TYPES.get(file_ext, set())
+        allowed_mimes: set[str] = {
+            mime.value for mime in self.ALLOWED_MIME_TYPES.get(file_ext, set())
+        }
 
         if detected_mime not in allowed_mimes:
             # Log the detailed mismatch for debugging/auditing

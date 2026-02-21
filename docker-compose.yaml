@@ -96,7 +96,7 @@ services:
       retries: 3
     restart: unless-stopped
 
-  # Create MLflow bucket in MinIO
+  # Create bucket in MinIO
   minio-mc:
     image: minio/mc:latest
     platform: linux/arm64
@@ -108,29 +108,63 @@ services:
     depends_on:
       - minio
     entrypoint: >
-      bin/sh -c "
-      until mc alias set myminio http://minio:9000 $MINIO_ROOT_USER $MINIO_ROOT_PASSWORD; do
+      /bin/sh -c "
+      echo 'Waiting for MinIO server to initialize...';
+      until mc alias set myminio http://minio:9000 $$MINIO_ROOT_USER $$MINIO_ROOT_PASSWORD; do
         sleep 2;
       done;
 
-      mc exec myminio -- mkdir -p /data/minio-events;
+      echo 'Creating bucket...';
+      mc mb myminio/$$AWS_S3_BUCKET || true;
+      mc anonymous set private myminio/$$AWS_S3_BUCKET;
 
-      mc mb myminio/${AWS_S3_BUCKET} || true;
-      mc anonymous set private myminio/${AWS_S3_BUCKET};
-
+      echo 'Configuring webhook...';
       mc admin config set myminio notify_webhook:webhook1 \
         endpoint='https://api.yourdomain.com/webhooks/storage' \
         queue_dir='/data/minio-events' \
         queue_limit='100000';
 
+      echo 'Restarting MinIO service to apply configuration...';
       mc admin service restart myminio;
 
-      mc event add myminio/${AWS_S3_BUCKET} \
+      echo 'Waiting for MinIO server to come back online...';
+      until mc admin info myminio; do
+        sleep 2;
+      done;
+
+      echo 'Adding bucket event notification...';
+      mc event add myminio/$$AWS_S3_BUCKET \
         arn:minio:sqs::webhook1:webhook \
         --event put;
 
+      echo 'Setup successfully completed.';
       exit 0;
       "
+  jaeger:
+    # For distributed tracing collection and visualization
+    image: jaegertracing/jaeger:2.14.1
+    container_name: jaeger
+    environment:
+      - COLLECTOR_OTLP_ENABLED=true # enable OTLP receiver so Jaeger accepts OpenTelemetry traces
+      - SPAN_STORAGE_TYPE=badger # use BadgerDB as the span storage backend (embedded KV store)
+      - BADGER_EPHEMERAL=false # false = persist Badger data on disk; true = in-memory/ephemeral
+      - BADGER_DIRECTORY_VALUE=/badger/data # path inside container for Badger value log
+      - BADGER_DIRECTORY_KEY=/badger/key # path inside container for Badger key/LSM files
+    ports:
+      # Jaeger UI
+      - "16686:16686"
+      # OTLP gRPC receiver (for OpenTelemetry)
+      - "4317:4317"
+      # OTLP HTTP receiver
+      - "4318:4318"
+      # Jaeger Thrift receivers (legacy)
+      - "14268:14268"
+      - "14250:14250"
+      # Zipkin receiver
+      - "9411:9411"
+    volumes:
+      - jaeger_data:/badger
+    restart: unless-stopped
 
   # api:
   #   build:
@@ -199,3 +233,4 @@ volumes:
   rabbitmq_data:
   redis_data:
   minio_data:
+  jaeger_data:

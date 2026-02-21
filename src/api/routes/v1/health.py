@@ -9,7 +9,7 @@ from src.api.core.exceptions import HTTPError
 from src.api.core.ratelimit import get_rate_limiter
 from src.api.core.responses import MsgSpecJSONResponse
 from src.config import app_config
-from src.schemas.db.models import ClientSchema, GuestClientSchema
+from src.schemas.db.models import GuestUserSchema, UserSchema
 from src.schemas.routes.health import HealthStatusSchema
 
 logger = create_logger(name=__name__)
@@ -24,7 +24,7 @@ async def health_check(
     response: Response,  # Required to set cache headers  # noqa: ARG001, F821
     cache: Cache = Depends(get_cache),  # Required by caching decorator  # noqa: ARG001
     rate_limiter=Depends(get_rate_limiter),  # noqa: ANN001, ARG001
-    client: ClientSchema | GuestClientSchema = Depends(get_current_user_or_guest),  # noqa: ARG001
+    client: UserSchema | GuestUserSchema = Depends(get_current_user_or_guest),  # noqa: ARG001
 ) -> HealthStatusSchema:
     """Route for health checks"""
 

@@ -35,12 +35,6 @@ class ResourceEnum(StrEnum):
     STORAGE = "storage"
 
 
-class StatusEnum(StrEnum):
-    HEALTHY = "healthy"
-    UNHEALTHY = "unhealthy"
-    UNKNOWN = "unknown"
-
-
 class CircuitBreakerStateEnum(StrEnum):
     CLOSED = "closed"
     OPEN = "open"
@@ -56,7 +50,7 @@ class TierEnum(StrEnum):
     PRO = "pro"  # high limits, long TTLs and premium support
 
 
-class ClientStatusEnum(StrEnum):
+class UserStatusEnum(StrEnum):
     """Client account status."""
 
     # Onboarding
@@ -80,6 +74,17 @@ class RoleTypeEnum(StrEnum):
     GUEST = "guest"
     ADMIN = "admin"
     USER = "user"
+
+
+class StatusTypeEnum(StrEnum):
+    """General status types."""
+
+    PENDING = "pending"
+    UPLOADED = "uploaded"
+    VALIDATING = "validating"
+    PROCESSING = "processing"
+    COMPLETED = "completed"
+    FAILED = "failed"
 
 
 class APIKeyScopeEnum(StrEnum):
@@ -134,3 +139,42 @@ DANGEROUS_SCOPES: Final = frozenset(
 class DocumentValidationResult(TypedDict):
     valid: bool
     errors: list[str]
+
+
+class ExportFormat(StrEnum):
+    ALL = "all"
+    DOCUMENT_TAGS = "document_tags"
+    JSON = "json"
+    MARKDOWN = "markdown"
+    TABLE = "table"
+    TEXT = "text"
+
+
+class MimeTypeEnum(StrEnum):
+    PDF = "application/pdf"
+    TEXT = "text/plain"
+    JSON = "application/json"
+
+
+class PoolType(StrEnum):
+    """Celery worker pool strategies.
+
+    Notes
+    -----
+    `PREFORK`: Process-based workers (separate Python processes). Provides strong
+    isolation and true parallelism for CPU-bound or non-thread-safe tasks, but
+    increases memory usage (model loaded per process).
+
+    `THREADS`: Thread-based workers (single process). Lower memory usage since
+    models can be shared; required for GPU/CUDA workloads to avoid context
+    conflicts. The Python GIL may limit pure-Python parallelism, though many ML
+    runtimes release the GIL during inference.
+
+    Selection (short):
+        - Prefer `THREADS` for GPUs, large models, ONNX/optimized ML inference,
+          or fast startup.
+        - Prefer `PREFORK` for isolation, CPU-bound work, or non-thread-safe code.
+    """
+
+    PREFORK = "prefork"
+    THREADS = "threads"

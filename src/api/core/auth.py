@@ -16,16 +16,16 @@ from src import create_logger
 from src.api.core.dependencies import get_cache
 from src.api.core.exceptions import HTTPError
 from src.config import app_config, app_settings
-from src.db.models import DBClient, aget_db
+from src.db.models import DBUser, aget_db
 from src.db.repositories.api_repository import APIKeyRepository
-from src.db.repositories.client_repository import ClientRepository
+from src.db.repositories.user_repository import UserRepository
 from src.schemas.db.models import (
     APIKeySchema,
-    BaseClientSchema,
-    ClientSchema,
-    GuestClientSchema,
+    BaseUserSchema,
+    GuestUserSchema,
+    UserSchema,
 )
-from src.schemas.types import ClientStatusEnum, RoleTypeEnum
+from src.schemas.types import RoleTypeEnum, UserStatusEnum
 
 logger = create_logger(__name__)
 prefix: str = app_config.api_config.prefix
@@ -116,14 +116,14 @@ def create_access_token(
     """Create a JWT access token."""
     to_encode: dict[str, Any] = data.copy()
     expire: datetime = datetime.now() + (expires_delta or timedelta(minutes=15))
-    to_encode.update({"exp": expire})
+    to_encode.update({"exp": expire})  # type: ignore
 
     return jwt.encode(to_encode, SECRET_KEY, algorithm=ALGORITHM)
 
 
 async def get_current_user(
     token: str = Depends(oauth2_scheme), db: AsyncSession = Depends(aget_db)
-) -> BaseClientSchema:
+) -> BaseUserSchema:
     """Get the current user from the JWT token."""
     credentials_exception = HTTPError(
         status_code=status.HTTP_401_UNAUTHORIZED,
@@ -140,94 +140,90 @@ async def get_current_user(
     except JWTError as e:
         raise credentials_exception from e
 
-    client_repo = ClientRepository(db)
-    db_client = await client_repo.aget_client_by_name(name=name)
-    if db_client is None:
+    user_repo = UserRepository(db)
+    db_user = await user_repo.aget_user_by_name(name=name)
+    if db_user is None:
         raise credentials_exception
 
-    client_schema: BaseClientSchema | None = client_repo.convert_DBClient_to_schema(
-        db_client
-    )
-    if client_schema is None:
+    user_schema: BaseUserSchema | None = user_repo.convert_DBUser_to_schema(db_user)
+    if user_schema is None:
         raise credentials_exception
 
-    if not client_schema.is_active:
+    if not user_schema.is_active:
         raise HTTPError(status_code=status.HTTP_403_FORBIDDEN, details="Inactive user")
 
-    return client_schema
+    return user_schema
 
 
 async def get_current_user_or_guest(
     token: str = Depends(oauth2_scheme_optional), db: AsyncSession = Depends(aget_db)
-) -> BaseClientSchema | GuestClientSchema:
+) -> BaseUserSchema | GuestUserSchema:
     """Get the current user from JWT token or return a guest if no token provided."""
     # If no token provided, return guest user
     if not token:
         logger.info("No authentication token provided, returning guest user")
-        return GuestClientSchema()
+        return GuestUserSchema()
     try:
         payload: dict[str, Any] = jwt.decode(token, SECRET_KEY, algorithms=[ALGORITHM])
         name: str | None = payload.get("sub")
 
         if name is None:
             logger.warning("No 'sub' found in JWT payload, returning guest user")
-            return GuestClientSchema()
+            return GuestUserSchema()
 
     except JWTError as e:
         logger.warning(f"JWT validation failed: {e}, returning guest user")
-        return GuestClientSchema()
+        return GuestUserSchema()
 
-    client_repo = ClientRepository(db)
-    db_client = await client_repo.aget_client_by_name(name=name)
-    if db_client is None:
-        logger.warning(f"Client not found for name: {name}, returning guest user")
-        return GuestClientSchema()
+    user_repo = UserRepository(db)
+    db_user = await user_repo.aget_user_by_name(name=name)
+    if db_user is None:
+        logger.warning(f"user not found for name: {name}, returning guest user")
+        return GuestUserSchema()
 
-    client_schema: BaseClientSchema | None = client_repo.convert_DBClient_to_schema(
-        db_client
-    )
-    if client_schema is None:
+    user_schema: BaseUserSchema | None = user_repo.convert_DBUser_to_schema(db_user)
+    if user_schema is None:
         logger.error(
-            f"Failed to convert DBClient to ClientSchema for name: {name}, returning guest user"
+            f"Failed to convert DBUser to UserSchema for name: {name}, returning guest user"
         )
-        return GuestClientSchema()
+        return GuestUserSchema()
 
-    if not client_schema.is_active:
+    if not user_schema.is_active:
         logger.warning(f"Inactive user attempted access: {name}, returning guest user")
-        return GuestClientSchema()
+        return GuestUserSchema()
 
-    return client_schema
+    return user_schema
 
 
 async def authenticate_user(
     db: AsyncSession, username: str, password: str
-) -> DBClient | None:
+) -> DBUser | None:
     """Authenticate user with username and password."""
-    client_repo = ClientRepository(db)
-    db_client = await client_repo.aget_client_by_name(username)
-    if not db_client:
+    user_repo = UserRepository(db)
+    db_user = await user_repo.aget_user_by_name(username)
+    if not db_user:
         return None
 
-    if not verify_password(password, db_client.password_hash):
+    if not verify_password(password, db_user.password_hash):
         return None
 
-    return db_client
+    return db_user
 
 
 async def get_current_active_user(
-    current_user: ClientSchema = Depends(get_current_user),
-) -> ClientSchema:  # noqa: B008
+    current_user: UserSchema = Depends(get_current_user),
+) -> UserSchema:  # noqa: B008
     """Get the current active user."""
-    if not current_user.is_active:  # type: ignore
+    if not current_user.is_active:
         raise HTTPError(status_code=status.HTTP_403_FORBIDDEN, details="Inactive user")
     return current_user
 
 
 async def get_current_admin_user(
-    current_user: ClientSchema = Depends(get_current_active_user),
-) -> ClientSchema:  # noqa: B008
+    current_user: UserSchema = Depends(get_current_active_user),
+) -> UserSchema:  # noqa: B008
     """Get the current active admin user."""
-    if RoleTypeEnum.ADMIN not in current_user.roles:  # type: ignore
+    if RoleTypeEnum.ADMIN not in current_user.roles:
         raise HTTPError(
             status_code=status.HTTP_403_FORBIDDEN,
             details="Admin access required",
@@ -247,15 +243,15 @@ def get_api_key_from_header(api_key: str | None = Security(API_KEY_HEADER)) -> s
     return api_key
 
 
-async def avalidate_credit_balance(db_client: DBClient, cost: Decimal) -> bool:
-    """Validate that the client has enough credits.
+async def avalidate_credit_balance(db_user: DBUser, cost: Decimal) -> bool:
+    """Validate that the user has enough credits.
 
     Raises
     ------
     HTTPError
-        If the client does not have enough credits.
+        If the user does not have enough credits.
     """
-    if db_client.credits < cost:
+    if db_user.credits < cost:
         raise HTTPError(
             status_code=status.HTTP_402_PAYMENT_REQUIRED,
             details="Insufficient credits",
@@ -283,10 +279,10 @@ async def get_current_api_key(
 
     api_key_repo = APIKeyRepository(db)
     db_api_key = await api_key_repo.aget_api_key_by_prefix(key_prefix=key_prefix)
-    db_client = db_api_key.client if db_api_key else None
+    db_user = db_api_key.user if db_api_key else None
 
-    # Validate the API key and associated client
-    if not db_client or db_client.status != ClientStatusEnum.ACTIVE:
+    # Validate the API key and associated user
+    if not db_user or db_user.status != UserStatusEnum.ACTIVE:
         logger.warning(f"Unauthorized access attempt with API key prefix: {key_prefix}")
         raise HTTPError(
             status_code=status.HTTP_401_UNAUTHORIZED,
@@ -320,7 +316,7 @@ async def get_current_api_key(
         )
 
     # Store credit deduction info in request state (will be deducted by middleware on success)
-    if db_client:
+    if db_user:
         # Per-endpoint cost overrides
         path: str = request.url.path if request else ""
         cost_map = app_config.endpoint_policies_config.credit_costs or {}
@@ -328,9 +324,9 @@ async def get_current_api_key(
         cost_value = cost_map.get(path, default_cost)
         cost = Decimal(str(cost_value))
 
-        if await avalidate_credit_balance(db_client, cost):
+        if await avalidate_credit_balance(db_user, cost):
             # Required by BillingMiddleware to deduct credits after successful request
-            request.state.api_key_client_id = db_client.id
+            request.state.api_key_user_id = db_user.id
             request.state.api_key_id = db_api_key.id
             request.state.api_key_cost = cost
 

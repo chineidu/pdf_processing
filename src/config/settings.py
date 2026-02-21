@@ -62,11 +62,35 @@ class BaseConfig(BaseSettings):
     AWS_SECRET_ACCESS_KEY: SecretStr = SecretStr("minioadmin")
     AWS_DEFAULT_REGION: str = "us-east-1"
 
+    # ===== RABBITMQ =====
+    RABBITMQ_HOST: str = "localhost"
+    RABBITMQ_PORT: int = 5672
+    RABBITMQ_DEFAULT_USER: str = "guest"
+    RABBITMQ_DEFAULT_PASS: SecretStr = SecretStr("guest")
+    RABBITMQ_VIRTUAL_HOST: str = "/"
+    RABBITMQ_HEARTBEAT: int = 600  # Heartbeat interval in seconds
+    RABBITMQ_EXPIRATION_MS: int = 1800000
+
+    # ===== CELERY =====
+    C_FORCE_ROOT: int = 1  # Suppress root user warning
+    CELERY_OPTIMIZATION: str = (
+        "fair"  # Optimize Celery performance (e.g., "fair", "speed", "memory")
+    )
+    CELERY_CONCURRENCY: int = (
+        2  # Number of worker processes (adjust based on your system)
+    )
+    CELERY_LOGLEVEL: str = (
+        "warning"  # Set to 'info' or 'debug' for more verbose logging
+    )
+    # 'prefork' | 'threads' (prefork is generally better for CPU-bound tasks,
+    # threads can be used for I/O-bound tasks)
+    CELERY_POOL: str = "prefork"
+
     # ===== WEBHOOK =====
     WEBHOOK_URL: str = "http://localhost:8001/webhook"
     WEBHOOK_SECRET_KEY: SecretStr = SecretStr("your_webhook_secret_key_here")
     WEBHOOK_TIMEOUT_SECONDS: int = 5  # Timeout for webhook requests in seconds
-    WEBHOOK_MAX_RETRIES: int = 3  # Maximum number of retry attempts for
+    WEBHOOK_MAX_RETRIES: int = 3  # Maximum number of retry attempts for failed webhooks
 
     @field_validator(
         "PORT", "POSTGRES_PORT", "REDIS_PORT", "AWS_S3_PORT", mode="before"
@@ -141,6 +165,48 @@ class BaseConfig(BaseSettings):
         )
         url: str = f"{scheme}://{self.AWS_S3_HOST}:{self.AWS_S3_PORT}"
         return url
+
+    @property
+    def celery_database_url(self) -> str:
+        """
+        Constructs the Celery result backend URL.
+
+        Returns
+        -------
+        str
+            Complete Celery result backend URL in the format:
+            db+postgresql://user:password@host:port/dbname
+        """
+        password: str = quote(self.POSTGRES_PASSWORD.get_secret_value(), safe="")
+        url: str = (
+            f"db+postgresql://{self.POSTGRES_USER}"
+            f":{password}"
+            f"@{self.POSTGRES_HOST}"
+            f":{self.POSTGRES_PORT}"
+            f"/{self.POSTGRES_DB}"
+        )
+        return url
+
+    @property
+    def rabbitmq_url(self) -> str:
+        """Constructs the RabbitMQ connection URL."""
+        passwd: str = quote(self.RABBITMQ_DEFAULT_PASS.get_secret_value(), safe="")
+        raw_vhost: str = (self.RABBITMQ_VIRTUAL_HOST or "").strip()
+
+        # Normalize vhost to ensure it starts with a slash
+        if not raw_vhost:
+            normalized_vhost: str = "/"
+        else:
+            normalized_vhost = (
+                raw_vhost if raw_vhost.startswith("/") else f"/{raw_vhost}"
+            )
+        encoded_vhost: str = quote(normalized_vhost, safe="")
+
+        return (
+            f"amqp://{self.RABBITMQ_DEFAULT_USER}:{passwd}@"
+            f"{self.RABBITMQ_HOST}:{self.RABBITMQ_PORT}/{encoded_vhost}"
+            f"?heartbeat={self.RABBITMQ_HEARTBEAT}"
+        )
 
 
 # ---- Helper functions for environment setup ----

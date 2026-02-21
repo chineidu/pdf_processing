@@ -1,11 +1,11 @@
 """S3/MinIO storage service for managing cloud storage operations."""
 
 import asyncio
-from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, AsyncGenerator
 
 import boto3
+import pendulum
 from botocore.client import Config
 from botocore.exceptions import BotoCoreError, ClientError
 
@@ -107,15 +107,26 @@ def _get_s3_stream(client: Any, bucket_name: str, key: str) -> Any:
 
 
 def _generate_presigned_url(
-    client: Any, bucket_name: str, object_name: str, expiration: int = 3600
-) -> str:
+    client: Any,
+    bucket_name: str,
+    object_name: str,
+    expiration: int = 3600,
+    content_type: str | None = None,
+) -> dict[str, str]:
     """Generate a presigned URL for the given S3 object."""
     try:
-        return client.generate_presigned_url(
-            "get_object",
-            Params={"Bucket": bucket_name, "Key": object_name},
+        params: dict[str, str] = {"Bucket": bucket_name, "Key": object_name}
+        if content_type:
+            params["ContentType"] = content_type
+        url = client.generate_presigned_url(
+            "put_object",
+            Params=params,
             ExpiresIn=expiration,
         )
+        return {
+            "url": url,
+            "expires_at": pendulum.now("UTC").add(seconds=expiration).isoformat(),
+        }
     except ClientError as e:
         logger.error(f"Failed to generate presigned URL: {e}")
         raise
@@ -141,7 +152,8 @@ class S3StorageService:
                 aws_secret_access_key=app_settings.AWS_SECRET_ACCESS_KEY.get_secret_value(),
                 region_name=app_settings.AWS_DEFAULT_REGION,
                 config=Config(
-                    retries={"max_attempts": MAX_ATTEMPTS, "mode": "adaptive"}
+                    retries={"max_attempts": MAX_ATTEMPTS, "mode": "adaptive"},
+                    signature_version="s3v4",
                 ),
                 # ---- Required for MinIO or other S3-compatible services ----
                 endpoint_url=app_settings.aws_s3_endpoint_url,
@@ -206,7 +218,7 @@ class S3StorageService:
         extra_args = UploadResultExtraArgs(
             Metadata=S3UploadMetadata(
                 task_id=task_id,
-                uploaded_at=datetime.now(timezone.utc).isoformat(),
+                uploaded_at=pendulum.now("UTC").isoformat(),
                 correlation_id=correlation_id,
                 environment=environment,
             ),
@@ -308,7 +320,12 @@ class S3StorageService:
         object_name: str = self.get_object_name(task_id)
         return f"{self.s3_client.meta.endpoint_url}/{self.bucket_name}/{object_name}"
 
-    async def aget_presigned_url(self, task_id: str, expiration: int = 3600) -> str:
+    async def aget_presigned_url(
+        self,
+        task_id: str,
+        expiration: int = 3600,
+        content_type: str | None = None,
+    ) -> dict[str, str]:
         """Asynchronously get a presigned URL for the given task ID."""
         object_name = self.get_object_name(task_id)
         return await asyncio.to_thread(
@@ -317,6 +334,7 @@ class S3StorageService:
             self.bucket_name,
             object_name,
             expiration,
+            content_type,
         )
 
     async def _aupload_to_s3(

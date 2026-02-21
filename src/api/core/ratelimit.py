@@ -16,7 +16,7 @@ from src import create_logger
 from src.api.core.auth import get_current_user_or_guest
 from src.api.core.exceptions import RateLimitError
 from src.config import app_config, app_settings
-from src.schemas.db.models import BaseClientSchema, GuestClientSchema
+from src.schemas.db.models import BaseUserSchema, GuestUserSchema
 from src.schemas.types import TierEnum
 
 logger = create_logger(name=__name__)
@@ -198,9 +198,7 @@ rate_limiter = RateLimiter()
 
 async def get_rate_limiter(
     request: Request,
-    user: BaseClientSchema | GuestClientSchema | None = Depends(
-        get_current_user_or_guest
-    ),
+    user: BaseUserSchema | GuestUserSchema | None = Depends(get_current_user_or_guest),
 ) -> None:
     """
     Enforces rate limits per user tier and API path.
@@ -212,7 +210,7 @@ async def get_rate_limiter(
     path = sanitize_path(request.url.path)
 
     # Identify user: Use guest (ip address) or authenticated client
-    if isinstance(user, GuestClientSchema):
+    if isinstance(user, GuestUserSchema):
         user_id = request.client.host or "anonymous"  # type: ignore
     else:
         user_id = (

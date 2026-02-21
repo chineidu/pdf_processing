@@ -5,11 +5,18 @@ from uuid import uuid4
 from pydantic import ConfigDict, EmailStr, Field, SecretStr, field_validator
 
 from src.schemas.base import BaseSchema
-from src.schemas.types import APIKeyScopeEnum, ClientStatusEnum, RoleTypeEnum, TierEnum
+from src.schemas.types import (
+    APIKeyScopeEnum,
+    MimeTypeEnum,
+    RoleTypeEnum,
+    StatusTypeEnum,
+    TierEnum,
+    UserStatusEnum,
+)
 
 
-class BaseClientSchema(BaseSchema):
-    """Schema representing a client."""
+class BaseUserSchema(BaseSchema):
+    """Schema representing a user."""
 
     model_config = ConfigDict(
         from_attributes=True,
@@ -23,7 +30,7 @@ class BaseClientSchema(BaseSchema):
     tier: TierEnum = Field(default=TierEnum.FREE)
     roles: list[RoleTypeEnum] = Field(default_factory=list)
     credits: float = Field(default=0.0, le=1_000_000.0, ge=0.0)
-    status: ClientStatusEnum = Field(default=ClientStatusEnum.ACTIVE)
+    status: UserStatusEnum = Field(default=UserStatusEnum.ACTIVE)
     is_active: bool = Field(default=True)
     created_at: datetime | None = Field(default=None)
     updated_at: datetime | None = Field(default=None)
@@ -46,7 +53,7 @@ class BaseClientSchema(BaseSchema):
         return result
 
 
-class GuestClientSchema(BaseSchema):
+class GuestUserSchema(BaseSchema):
     """Schema representing a guest/anonymous user with limited access."""
 
     model_config = ConfigDict(
@@ -60,17 +67,17 @@ class GuestClientSchema(BaseSchema):
     email: EmailStr = Field(default="guest@anonymous.local")
     tier: TierEnum = Field(default=TierEnum.GUEST)
     credits: float = Field(default=0.0)
-    status: ClientStatusEnum = Field(default=ClientStatusEnum.ACTIVE)
+    status: UserStatusEnum = Field(default=UserStatusEnum.ACTIVE)
     is_active: bool = Field(default=True)
     created_at: datetime | None = None
     updated_at: datetime | None = None
 
 
-class ClientCreateSchema(BaseClientSchema):
-    """Schema representing a database client with password."""
+class UserCreateSchema(BaseUserSchema):
+    """Schema representing a database user with password."""
 
     password: SecretStr = Field(
-        description="Plaintext password for the client. This will be hashed before storage.",
+        description="Plaintext password for the user. This will be hashed before storage.",
         min_length=8,
         max_length=20,
     )
@@ -88,8 +95,8 @@ class ClientCreateSchema(BaseClientSchema):
     model_config = _custom_model_config
 
 
-class ClientSchema(BaseClientSchema):
-    """Schema representing a database client."""
+class UserSchema(BaseUserSchema):
+    """Schema representing a database user."""
 
     password_hash: str
 
@@ -120,7 +127,7 @@ class APIUpdateSchema(BaseSchema):
 class APIKeySchema(APIUpdateSchema):
     """Schema representing a database API key."""
 
-    client_id: int | None = Field(description="ID of the client owning the API key.")
+    user_id: int | None = Field(description="ID of the user owning the API key.")
     key_prefix: str = Field(description="Prefix of the API key.")
     key_hash: str = Field(description="Hashed value of the API key.")
     scopes: list[APIKeyScopeEnum] = Field(
@@ -172,3 +179,62 @@ ROLES: dict[str, RoleSchema] = {
         name=RoleTypeEnum.GUEST, description="Guest user with limited access"
     ),
 }
+
+
+class TaskSchema(BaseSchema):
+    """Task schema."""
+
+    model_config = ConfigDict(
+        from_attributes=True,
+        json_encoders={datetime: lambda v: v.isoformat() if v else None},
+    )
+
+    id: int | None = Field(default=None, description="Unique identifier of the task.")
+    task_id: str = Field(description="Unique identifier of the Celery task.")
+    user_id: int | None = Field(
+        default=None, description="ID of the user who initiated the task."
+    )
+    status: StatusTypeEnum = Field(
+        description="Current status of the task (e.g., pending, processing, completed, failed, etc)."
+    )
+    file_upload_key: str = Field(
+        description="S3 key of the uploaded file associated with the task."
+    )
+    file_result_key: str | None = Field(
+        default=None, description="S3 key of the processed result file."
+    )
+    file_size_bytes: int = Field(description="Size of the uploaded file in bytes.")
+    file_type: MimeTypeEnum | None = Field(
+        description="MIME type of the uploaded file."
+    )
+    error_message: str | None = Field(
+        default=None, description="Error message if the task failed."
+    )
+    error_message: str | None = Field(
+        default=None, description="Error message if the task failed."
+    )
+    created_at: datetime | None = Field(
+        default=None, description="Creation date and time of the task."
+    )
+    updated_at: datetime | None = Field(
+        default=None, description="Last update date and time of the task."
+    )
+    completed_at: datetime | None = Field(
+        default=None, description="Completion date and time of the task."
+    )
+
+    @field_validator("status", mode="before")
+    @classmethod
+    def convert_status(cls, v: Any) -> StatusTypeEnum:
+        """Convert DBRole objects or strings to StatusTypeEnum."""
+        if isinstance(v, str):
+            return StatusTypeEnum(v)
+        return v
+
+    @field_validator("file_type", mode="before")
+    @classmethod
+    def convert_file_type(cls, v: Any) -> MimeTypeEnum:
+        """Convert DBRole objects or strings to MimeTypeEnum."""
+        if isinstance(v, str):
+            return MimeTypeEnum(v)
+        return v

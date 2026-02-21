@@ -15,9 +15,9 @@ from src.api.core.auth import (
 from src.api.core.exceptions import HTTPError
 from src.api.core.responses import MsgSpecJSONResponse
 from src.config import app_settings
-from src.db.models import DBClient, aget_db
-from src.db.repositories.client_repository import ClientRepository
-from src.schemas.db.models import BaseClientSchema, ClientCreateSchema, ClientSchema
+from src.db.models import DBUser, aget_db
+from src.db.repositories.user_repository import UserRepository
+from src.schemas.db.models import BaseUserSchema, UserCreateSchema, UserSchema
 
 if TYPE_CHECKING:
     pass
@@ -31,14 +31,14 @@ router = APIRouter(tags=["auth"], default_response_class=MsgSpecJSONResponse)
 @router.post("/register", status_code=status.HTTP_201_CREATED)
 async def register_user(
     request: Request,  # Required by SlowAPI  # noqa: ARG001
-    client: ClientCreateSchema,
+    client: UserCreateSchema,
     db: AsyncSession = Depends(aget_db),
-) -> ClientCreateSchema:
+) -> UserCreateSchema:
     """Register a new user.
 
     Parameters
     ----------
-    client : ClientCreateSchema
+    client : UserCreateSchema
         Data required to create a new client (e.g. username, email, password).
     db : AsyncSession, optional
         Asynchronous database session dependency used to query and persist client data
@@ -46,19 +46,19 @@ async def register_user(
 
     Returns
     -------
-    ClientCreateSchema
+    UserCreateSchema
         Schema representation of the newly created client.
     """
     # Check if name exists
-    client_repo = ClientRepository(db=db)
-    db_client: DBClient | None = await client_repo.aget_client_by_name(name=client.name)
+    user_repo = UserRepository(db=db)
+    db_client: DBUser | None = await user_repo.aget_user_by_name(name=client.name)
     if db_client:
         raise HTTPError(
             status_code=status.HTTP_400_BAD_REQUEST,
             details="Name already exists. Please use a unique name",
         )
-    # Check if username exists
-    db_client = await client_repo.aget_client_by_email(email=client.email)
+    # Check if email exists
+    db_client = await user_repo.aget_user_by_email(email=client.email)
     if db_client:
         raise HTTPError(
             status_code=status.HTTP_400_BAD_REQUEST,
@@ -66,17 +66,17 @@ async def register_user(
         )
 
     # === Create new client ===
-    password_hash: str = get_password_hash(client.password.get_secret_value())  # type: ignore
-    client_info = ClientSchema(**client.model_dump(), password_hash=password_hash)
+    password_hash: str = get_password_hash(client.password.get_secret_value())
+    client_info = UserSchema(**client.model_dump(), password_hash=password_hash)
     print(f"DEBUG: Creating client: {client_info}")
 
-    new_client = await client_repo.acreate_client(client=client_info)
+    new_client = await user_repo.acreate_user(user=client_info)
     if not new_client:
         raise HTTPError(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             details="Failed to create new client due to an internal error.",
         )
-    return ClientCreateSchema(
+    return UserCreateSchema(
         external_id=client.external_id,
         name=client.name,
         email=client.email,
@@ -114,7 +114,7 @@ async def login_for_access_token(
     """
     logger.info("Authenticating user...")
 
-    client: DBClient | None = await authenticate_user(
+    client: DBUser | None = await authenticate_user(
         db=db,
         username=form_data.username,  # form requires 'username' field
         password=form_data.password,
@@ -138,8 +138,8 @@ async def login_for_access_token(
 @router.get("/users/me", status_code=status.HTTP_200_OK)
 async def get_current_user(
     request: Request,  # Required by SlowAPI  # noqa: ARG001
-    current_user: BaseClientSchema = Depends(get_current_active_user),
-) -> BaseClientSchema:
+    current_user: BaseUserSchema = Depends(get_current_active_user),
+) -> BaseUserSchema:
     """
     Endpoint to get the current logged-in user. This endpoint is protected
     and requires a valid JWT token.
@@ -150,7 +150,7 @@ async def get_current_user(
         The current logged-in user's details.
     """
 
-    return BaseClientSchema(
+    return BaseUserSchema(
         external_id=current_user.external_id,
         name=current_user.name,
         email=current_user.email,

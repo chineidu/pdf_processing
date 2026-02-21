@@ -82,3 +82,60 @@ config:
       "/detect-anomaly": 3.0
       "/cluster": 2.5
       "/recommend": 4.0
+
+  queue_config:
+    high_priority_ml: high_priority_ml # Queue for high priority machine learning tasks
+    normal_priority_ml: normal_priority_ml # Queue for normal priority machine learning tasks
+    low_priority_ml: low_priority_ml # Queue for low priority machine learning tasks
+    cleanups: periodic # Queue for cleanup tasks
+    notifications: user_notifications # Queue for user notifications
+
+    # Priority mapping for queues
+    priority_config:
+      sizes:
+        # lower is higher priority
+        high_priority: 1600
+        normal_priority: 3200
+        low_priority: 6400
+      weights:
+        # higher is higher priority
+        high_priority: 9
+        normal_priority: 6
+        low_priority: 3
+
+  celery_config:
+    task_config:
+      task_serializer: json
+      result_serializer: json
+      accept_content: ["json"]
+      timezone: UTC
+      enable_utc: true
+    # Task routing and queues
+    task_routes:
+      src.celery_app.tasks.periodic.*: { queue: "${config.queue_config.cleanups}" }
+
+    worker_config:
+      worker_prefetch_multiplier: 1 # Busy workers are only assigned 1 task
+      task_acks_late: true # Acknowledge tasks after completion
+      # This config ONLY works with pool_type = 'prefork' (default)
+      worker_max_tasks_per_child: 100 # Limit the number of tasks a worker can process before being replaced
+      worker_max_memory_per_child: 2621440 # Max memory (in kilobytes) a worker can use before being replaced
+
+    beat_config:
+      beat_schedule:
+        cleanup_old_records:
+          task: src.celery_app.tasks.periodic.cleanup_old_records
+          schedule: 3600 # 1 hour
+      health_check:
+        task: src.celery_app.tasks.periodic.health_check
+        schedule: 600 # 10 minutes
+
+    other_config:
+      result_expires: 18000 # 5 hours
+      task_compression: null # Disable task compression. Use `gzip` for compression
+      result_compression: null
+      # rpc:// as a transport-only result backend; results vanish on broker restart
+      # result_backend: rpc://
+      result_backend_always_retry: true
+      result_persistent: true
+      result_backend_max_retries: 3

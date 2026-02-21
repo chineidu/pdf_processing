@@ -16,7 +16,7 @@ from sqlalchemy.ext.asyncio import (
 from sqlalchemy.orm import selectinload
 
 from src import create_logger
-from src.db.models import DBAPIKey, DBClient, aget_db
+from src.db.models import DBAPIKey, DBUser, aget_db
 from src.schemas.db.models import APIKeySchema
 
 logger = create_logger(__name__)
@@ -30,12 +30,12 @@ class APIKeyRepository:
 
     # ----- Read operations -----
     async def aget_api_key_by_id(self, id: int) -> DBAPIKey | None:
-        """Get a api_key by its ID with eager loading of client and roles."""
+        """Get a api_key by its ID with eager loading of user and roles."""
         try:
             stmt = (
                 select(DBAPIKey)
                 .where(DBAPIKey.id == id)
-                .options(selectinload(DBAPIKey.client).selectinload(DBClient.roles))
+                .options(selectinload(DBAPIKey.user).selectinload(DBUser.roles))
             )
             return await self.db.scalar(stmt)
         except Exception as e:
@@ -43,13 +43,13 @@ class APIKeyRepository:
             return None
 
     async def aget_api_key_by_prefix(self, key_prefix: str) -> DBAPIKey | None:
-        """Get a api_key by its key prefix with eager loading of client and roles."""
+        """Get a api_key by its key prefix with eager loading of user and roles."""
         try:
             stmt = (
                 select(DBAPIKey)
                 .where(DBAPIKey.key_prefix == key_prefix)
-                # Eager load client, then client's roles to avoid N+1 queries
-                .options(selectinload(DBAPIKey.client).selectinload(DBClient.roles))
+                # Eager load user, then user's roles to avoid N+1 queries
+                .options(selectinload(DBAPIKey.user).selectinload(DBUser.roles))
             )
             return await self.db.scalar(stmt)
         except Exception as e:
@@ -57,14 +57,14 @@ class APIKeyRepository:
             return None
 
     async def aget_api_key_by_creation_time(
-        self, client_id: int, created_after: str, created_before: str
+        self, user_id: int, created_after: str, created_before: str
     ) -> list[DBAPIKey]:
         """Get api_key created within a specific time range. Uses database-level comparison.
 
         Parameters
         ----------
-        client_id : int
-            The ID of the client whose API keys are being queried.
+        user_id : int
+            The ID of the user whose API keys are being queried.
         created_after : str
             The start timestamp (inclusive). e.g. "2023-01-01T00:00:00"
         created_before : str
@@ -85,7 +85,7 @@ class APIKeyRepository:
             raise ValueError("Timestamps must be valid ISO 8601 strings.") from e
 
         stmt = select(DBAPIKey).where(
-            DBAPIKey.client_id == client_id,
+            DBAPIKey.user_id == user_id,
             DBAPIKey.created_at >= start,
             DBAPIKey.created_at <= end,
         )
@@ -93,14 +93,14 @@ class APIKeyRepository:
         return list(result.all())
 
     async def aget_api_key_by_last_used_time(
-        self, client_id: int, last_used_after: str, last_used_before: str
+        self, user_id: int, last_used_after: str, last_used_before: str
     ) -> list[DBAPIKey]:
         """Get api_key last used within a certain time period. Uses database-level comparison.
 
         Parameters
         ----------
-        client_id : int
-            The ID of the client whose API keys are being queried.
+        user_id : int
+            The ID of the user whose API keys are being queried.
         last_used_after : str
             The start timestamp (inclusive). e.g. "2023-01-01T00:00:00"
         last_used_before : str
@@ -121,7 +121,7 @@ class APIKeyRepository:
             raise ValueError("Timestamps must be valid ISO 8601 strings.") from e
 
         stmt = select(DBAPIKey).where(
-            DBAPIKey.client_id == client_id,
+            DBAPIKey.user_id == user_id,
             DBAPIKey.last_used_at >= start,
             DBAPIKey.last_used_at <= end,
         )
@@ -129,11 +129,11 @@ class APIKeyRepository:
         return list(result.all())
 
     async def aget_keys_by_owner(self, owner_id: int) -> list[DBAPIKey]:
-        """Get all API keys belonging to a client."""
+        """Get all API keys belonging to a user."""
         try:
             stmt = (
                 select(DBAPIKey)
-                .where(DBAPIKey.client_id == owner_id)
+                .where(DBAPIKey.user_id == owner_id)
                 .order_by(DBAPIKey.created_at.desc())
             )
             result = await self.db.scalars(stmt)
@@ -175,7 +175,7 @@ class APIKeyRepository:
 
     # ----- Update operations -----
     async def aupdate_api_key(
-        self, key_id: int, client_id: int, update_data: dict[str, Any]
+        self, key_id: int, user_id: int, update_data: dict[str, Any]
     ) -> DBAPIKey | None:
         """Update a api_key in the database in a single round trip.
 
@@ -188,7 +188,7 @@ class APIKeyRepository:
         # Fetch the existing api_key
         stmt = (
             select(DBAPIKey)
-            .where(DBAPIKey.id == key_id, DBAPIKey.client_id == client_id)
+            .where(DBAPIKey.id == key_id, DBAPIKey.user_id == user_id)
             # Lock the row (prevents race conditions)
             .with_for_update()
         )
@@ -196,7 +196,7 @@ class APIKeyRepository:
         db_api_key: DBAPIKey | None = result.scalar_one_or_none()
 
         if not db_api_key:
-            logger.warning(f"API Key {key_id} not found for client {client_id}")
+            logger.warning(f"API Key {key_id} not found for user {user_id}")
             return None
 
         # Update the data
@@ -222,25 +222,25 @@ class APIKeyRepository:
 
         try:
             await self.db.commit()
-            logger.info(f"Successfully updated API Key {key_id} for client {client_id}")
+            logger.info(f"Successfully updated API Key {key_id} for user {user_id}")
             return db_api_key
 
         except Exception as e:
-            logger.error(f"Error updating API Key {key_id} for client {client_id}: {e}")
+            logger.error(f"Error updating API Key {key_id} for user {user_id}: {e}")
             await self.db.rollback()
             raise
 
     # ----- Delete operations -----
     async def adelete_owned_key(self, key_id: int, owner_id: int) -> bool:
         """
-        Delete a key only if it belongs to the specific client.
+        Delete a key only if it belongs to the specific user.
         Returns True if deleted, False if not found/not owned.
         """
         try:
             stmt = (
                 delete(DBAPIKey)
                 .where(DBAPIKey.id == key_id)
-                .where(DBAPIKey.client_id == owner_id)  # <--- CRITICAL SECURITY CHECK
+                .where(DBAPIKey.user_id == owner_id)  # <--- CRITICAL SECURITY CHECK
             )
             result = await self.db.execute(stmt)
             await self.db.commit()

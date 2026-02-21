@@ -5,7 +5,7 @@ from opentelemetry.trace import Status, StatusCode
 from sqlalchemy import func, update
 
 from src import create_logger
-from src.db.models import DBAPIKey, DBClient, aget_db
+from src.db.models import DBAPIKey, DBUser, aget_db
 
 logger = create_logger(name=__name__)
 tracer = trace.get_tracer(__name__)
@@ -39,9 +39,9 @@ async def adeduct_credits_background(
                 # Task 2: Deduct Credits (if cost > 0)
                 if cost_value > 0:
                     stmt_bill = (
-                        update(DBClient)
-                        .where(DBClient.id == client_id)
-                        .values(credits=DBClient.credits - cost_value)
+                        update(DBUser)
+                        .where(DBUser.id == client_id)
+                        .values(credits=DBUser.credits - cost_value)
                     )
                     span.add_event("credits_deducted", {"amount": cost_value})
                     await session.execute(stmt_bill)

@@ -16,6 +16,7 @@ from sqlalchemy import (
     Numeric,
     String,
     Table,
+    Text,
     func,
 )
 from sqlalchemy.ext.asyncio.session import AsyncSession
@@ -34,24 +35,27 @@ class Base(DeclarativeBase):
 # =========================================================
 # ==================== Database Models ====================
 # =========================================================
-# Association table for many-to-many relationship between clients and roles
+# Association table for many-to-many relationship between users and roles
 user_roles = Table(
     "user_roles",
     Base.metadata,
-    Column("client_id", ForeignKey("clients.id"), primary_key=True),
+    Column("user_id", ForeignKey("users.id"), primary_key=True),
     Column("role_id", ForeignKey("roles.id"), primary_key=True),
 )
 
 
-class DBClient(Base):
-    """Data model for storing client information."""
+class DBUser(Base):
+    """Data model for storing user information."""
 
-    __tablename__: str = "clients"
+    __tablename__: str = "users"
 
+    # Identifiers
     id: Mapped[int] = mapped_column("id", primary_key=True)
     external_id: Mapped[str] = mapped_column(String(255), unique=True, nullable=False)
     name: Mapped[str] = mapped_column(String(255), nullable=False)
     email: Mapped[str] = mapped_column(String(255), unique=True, nullable=False)
+
+    # For security, we store a hash of the password, not the plaintext password
     password_hash: Mapped[str] = mapped_column(String(255), nullable=False)
 
     # Enums as strings (Using strings for ease of use during migrations)
@@ -72,24 +76,30 @@ class DBClient(Base):
         DateTime(timezone=True), nullable=True, default=func.now(), onupdate=func.now()
     )
 
-    # Relationship: Enables Python-side navigation (e.g. my_client_instance.api_keys)
-    # Note: This does not create a column in the 'clients' database table.
-    # When retrieving, use selectinload(DBClient.api_keys) to eager load api_keys
+    # Relationship: Enables Python-side navigation (e.g. my_user_instance.api_keys)
+    # Note: This does not create a column in the 'users' database table.
+    # When retrieving, use selectinload(DBuser.api_keys) to eager load api_keys
     api_keys: Mapped[list["DBAPIKey"]] = relationship(
-        back_populates="client", cascade="all, delete-orphan"
+        back_populates="user", cascade="all, delete-orphan"
     )
 
-    # Enables Python-side navigation for roles (e.g. my_client_instance.roles)
-    # Note: This does not create a column in the 'clients' database table.
+    # Enables Python-side navigation for roles (e.g. my_user_instance.roles)
+    # Note: This does not create a column in the 'users' database table.
     # Many-to-many relationship with roles (through user_roles association table)
-    roles = relationship("DBRole", secondary=user_roles, back_populates="clients")
+    roles = relationship("DBRole", secondary=user_roles, back_populates="users")
+
+    # Relationship: Enables Python-side navigation for tasks (e.g. my_user_instance.tasks)
+    # Note: This does not create a column in the 'users' database table.
+    tasks: Mapped[list["DBTask"]] = relationship(
+        back_populates="user", cascade="all, delete-orphan"
+    )
 
     # Composite index for optimized queries
-    __table_args__ = (Index("ix_clients_status_created_at", "status", "created_at"),)
+    __table_args__ = (Index("ix_users_status_created_at", "status", "created_at"),)
 
     def __repr__(self) -> str:
         """
-        Returns a string representation of the Client object.
+        Returns a string representation of the User object.
 
         Returns
         -------
@@ -102,21 +112,25 @@ class DBClient(Base):
 
 
 class DBAPIKey(Base):
-    """Data model for storing api_keys information."""
+    """Data model for storing API key information."""
 
     __tablename__: str = "api_keys"
 
+    # Identifiers
     id: Mapped[int] = mapped_column("id", primary_key=True)
-    # Foreign key to DBClient.id, unique=False to allow multiple keys per client
-    client_id: Mapped[int] = mapped_column(ForeignKey("clients.id"), nullable=False)
+    # Foreign key to DBUser.id, unique=False to allow multiple keys per user
+    user_id: Mapped[int] = mapped_column(ForeignKey("users.id"), nullable=False)
     key_prefix: Mapped[str] = mapped_column(String(10), nullable=False)
     key_hash: Mapped[str] = mapped_column(String(255), nullable=False)
     name: Mapped[str] = mapped_column(String(255), nullable=False)
+
+    # Permissions and rate limits
     scopes: Mapped[list[str]] = mapped_column(JSON, nullable=False, default=list)
     requests_per_minute: Mapped[int] = mapped_column(
         Integer, nullable=False, default=60
     )
     is_active: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
+
     # Timestamps
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, default=func.now()
@@ -129,9 +143,9 @@ class DBAPIKey(Base):
     )
     expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=True)
 
-    # Relationship: Enables Python-side navigation (e.g. my_api_key_instance.client)
+    # Relationship: Enables Python-side navigation (e.g. my_api_key_instance.user)
     # Note: This does not create a column in the 'api_keys' database table.
-    client: Mapped["DBClient"] = relationship(back_populates="api_keys")
+    user: Mapped["DBUser"] = relationship(back_populates="api_keys")
 
     # Composite index for optimized queries
     __table_args__ = (Index("ix_api_keys_name_created_at", "name", "created_at"),)
@@ -155,11 +169,16 @@ class DBRole(Base):
 
     __tablename__: str = "roles"
 
+    # Identifiers
     id: Mapped[int] = mapped_column("id", primary_key=True)
     name: Mapped[str] = mapped_column(
         String(50), unique=True, nullable=False
     )  # e.g., 'admin', 'user', 'guest'
+
+    # Optional description of the role
     description: Mapped[str] = mapped_column(String(255), nullable=True)
+
+    # Timestamps
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=func.now()
     )
@@ -169,8 +188,8 @@ class DBRole(Base):
 
     # Relationship: Enables Python-side navigation.
     # Note: This does not create a column in the 'roles' database table.
-    # Many-to-many relationship with users (clients)
-    clients = relationship("DBClient", secondary=user_roles, back_populates="roles")
+    # Many-to-many relationship with users (users)
+    users = relationship("DBUser", secondary=user_roles, back_populates="roles")
 
     def __repr__(self) -> str:
         """
@@ -181,6 +200,57 @@ class DBRole(Base):
         str
         """
         return f"{self.__class__.__name__}(id={self.id!r}, name={self.name!r})"
+
+
+class DBTask(Base):
+    __tablename__: str = "tasks"
+
+    # Identifiers
+    id: Mapped[int] = mapped_column("id", primary_key=True)
+    task_id: Mapped[str] = mapped_column(String(255), unique=True, nullable=False)
+    user_id: Mapped[int] = mapped_column(ForeignKey("users.id"), nullable=False)
+
+    # Status and type
+    status: Mapped[str] = mapped_column(String(50), nullable=False)
+
+    # File information
+    file_upload_key: Mapped[str] = mapped_column(String(255), nullable=False)
+    file_result_key: Mapped[str] = mapped_column(String(255), nullable=True)
+    file_size_bytes: Mapped[int] = mapped_column(Integer, nullable=False)
+    file_type: Mapped[str] = mapped_column(String(50), nullable=False)
+
+    # Error
+    error_message: Mapped[str] = mapped_column(Text, nullable=True)
+
+    # Webhook information
+    webhook_url: Mapped[str] = mapped_column(String(255), nullable=True)
+    webhook_delivered_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+
+    # Timestamps
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, default=func.now()
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, default=func.now(), onupdate=func.now()
+    )
+    completed_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+
+    # Relationship: Enables Python-side navigation (e.g. my_task_instance.user)
+    # Note: This does not create a column in the 'tasks' database table.
+    user: Mapped["DBUser"] = relationship(back_populates="tasks")
+
+    # Composite index for optimized queries
+    __table_args__ = __table_args__ = (
+        Index("ix_tasks_user_id_created_at", "user_id", "created_at"),
+        # Needed for webhooks query by S3 key
+        Index("ix_tasks_file_upload_key", "file_upload_key"),
+        # Needed for filtering pending/completed tasks quickly
+        Index("ix_tasks_completed_at", "completed_at"),
+    )
 
 
 # =========================================================

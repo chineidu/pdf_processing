@@ -64,6 +64,7 @@ queue and listener.
 """
 
 import atexit
+import inspect
 import logging
 import logging.handlers
 import sys
@@ -189,6 +190,14 @@ def create_logger(
     - The first call initializes the logging system.
     - Structured logging cannot be changed after initialization.
     """
+    if name == "__main__":
+        frame = inspect.currentframe()
+        caller = frame.f_back if frame else None
+        if caller:
+            spec = caller.f_globals.get("__spec__")
+            if spec and getattr(spec, "name", None):
+                name = spec.name
+
     _setup_listener(
         level=level,
         structured=structured,
