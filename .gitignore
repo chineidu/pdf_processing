@@ -210,5 +210,5 @@ __marimo__/
 # --- Custom Ignore Rules ---
 **/**/.vscode/
 **/**/data/
-**/**/note.*
+**/**/note*.*
 **/**/.DS_Store

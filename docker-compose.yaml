@@ -22,7 +22,7 @@ services:
       - default
     restart: unless-stopped
 
-  local-rabbitmq: # 1st service
+  local-rabbitmq:
     image: rabbitmq:4.1.2-management
     container_name: local-rabbitmq
     env_file: # Location of file(s) containing the env vars. Only accessed by the container.
@@ -42,6 +42,18 @@ services:
       retries: 10
       start_period: 30s
     restart: unless-stopped
+
+  # Initialize RabbitMQ vhosts and permissions after it starts
+  rabbitmq-init:
+    image: curlimages/curl:latest
+    depends_on:
+      local-rabbitmq:
+        condition: service_healthy
+    entrypoint: /bin/sh
+    command: ["/init_rabbitmq.sh"]
+    volumes:
+      - ./docker/init_rabbitmq.sh:/init_rabbitmq.sh:ro
+    restart: "no"
 
   # Redis for caching
   redis:
@@ -84,6 +96,16 @@ services:
     environment:
       - MINIO_ROOT_USER=${AWS_ACCESS_KEY_ID}
       - MINIO_ROOT_PASSWORD=${AWS_SECRET_ACCESS_KEY}
+      # --- Automated AMQP Configuration ---
+      # The '1' acts as the identifier matching the arn:minio:sqs::1:amqp in the init script
+      - MINIO_NOTIFY_AMQP_ENABLE_1=on
+      - MINIO_NOTIFY_AMQP_URL_1=amqp://guest:guest@local-rabbitmq:5672/storage_events
+      # topic name = minio_events (matches the topic in config.yaml)
+      - MINIO_NOTIFY_AMQP_EXCHANGE_1=minio_events
+      - MINIO_NOTIFY_AMQP_EXCHANGE_TYPE_1=topic
+      - MINIO_NOTIFY_AMQP_ROUTING_KEY_1=s3.objectcreated.put
+      - MINIO_NOTIFY_AMQP_DELIVERY_MODE_1=2
+      - MINIO_NOTIFY_AMQP_MANDATORY_1=off
     ports:
       - "9000:9000"
       - "9001:9001"
@@ -106,40 +128,55 @@ services:
       - MINIO_ROOT_USER=${AWS_ACCESS_KEY_ID}
       - MINIO_ROOT_PASSWORD=${AWS_SECRET_ACCESS_KEY}
     depends_on:
-      - minio
-    entrypoint: >
-      /bin/sh -c "
-      echo 'Waiting for MinIO server to initialize...';
-      until mc alias set myminio http://minio:9000 $$MINIO_ROOT_USER $$MINIO_ROOT_PASSWORD; do
-        sleep 2;
-      done;
+      minio:
+        condition: service_healthy
+      local-rabbitmq:
+        condition: service_healthy
+      rabbitmq-init:
+        condition: service_completed_successfully
+    # The entrypoint script will:
+    # 1. Wait for MinIO to be ready
+    # 2. Create the bucket if it doesn't exist
+    # 3. Set up the event notification for RabbitMQ (for new object creation events)
+    entrypoint:
+      - /bin/sh
+      - -c
+      - |
+        set -eu
 
-      echo 'Creating bucket...';
-      mc mb myminio/$$AWS_S3_BUCKET || true;
-      mc anonymous set private myminio/$$AWS_S3_BUCKET;
+        echo 'Waiting for MinIO server to initialize...'
+        until mc alias set myminio http://minio:9000 $$MINIO_ROOT_USER $$MINIO_ROOT_PASSWORD; do
+          sleep 2
+        done
 
-      echo 'Configuring webhook...';
-      mc admin config set myminio notify_webhook:webhook1 \
-        endpoint='https://api.yourdomain.com/webhooks/storage' \
-        queue_dir='/data/minio-events' \
-        queue_limit='100000';
+        echo 'Creating bucket...'
+        mc mb myminio/$$AWS_S3_BUCKET --ignore-existing || true
+        mc anonymous set private myminio/$$AWS_S3_BUCKET
 
-      echo 'Restarting MinIO service to apply configuration...';
-      mc admin service restart myminio;
+        echo 'Adding bucket event notification for RabbitMQ...'
+        attempts=1
+        max_attempts=20
+        until [ $$attempts -gt $$max_attempts ]; do
+          if mc event add myminio/$$AWS_S3_BUCKET arn:minio:sqs::1:amqp --event put --ignore-existing; then
+            break
+          fi
+          echo "Retrying event registration ($$attempts/$$max_attempts)..."
+          attempts=$$((attempts + 1))
+          sleep 2
+        done
 
-      echo 'Waiting for MinIO server to come back online...';
-      until mc admin info myminio; do
-        sleep 2;
-      done;
+        echo 'Verifying bucket event notification...'
+        events_output="$(mc event list myminio/$$AWS_S3_BUCKET || true)"
+        echo "$$events_output"
+        case "$$events_output" in
+          *"arn:minio:sqs::1:amqp"*) ;;
+          *)
+            echo 'Failed to verify arn:minio:sqs::1:amqp notification'
+            exit 1
+            ;;
+        esac
 
-      echo 'Adding bucket event notification...';
-      mc event add myminio/$$AWS_S3_BUCKET \
-        arn:minio:sqs::webhook1:webhook \
-        --event put;
-
-      echo 'Setup successfully completed.';
-      exit 0;
-      "
+        echo 'Setup successfully completed.'
   jaeger:
     # For distributed tracing collection and visualization
     image: jaegertracing/jaeger:2.14.1

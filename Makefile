@@ -27,6 +27,7 @@ help:
 	@echo "  make restart                    - Restart services"
 	@echo "  make logs                       - View logs"
 	@echo "  make status                     - Check status"
+	@echo "  make health-check               - Verify all services are healthy (RabbitMQ perms, etc)"
 	@echo "  make setup                      - Setup from scratch"
 	@echo "  make clean-all                  - Clean everything (including volumes)"
 	@echo ""
@@ -48,7 +49,7 @@ install:
 	@echo "📦 Installing dependencies..."
 	uv sync
 
-.PHONY: api-run api-run-gunicorn worker-run
+.PHONY: api-run api-run-gunicorn worker-run storage-worker-run
 # ===============================
 # ========== START APP ==========
 # ===============================
@@ -95,7 +96,11 @@ worker-run:
 	@echo "🚀 Starting Celery worker..."
 	@uv run worker.py
 
-.PHONY: check-port kill-port
+storage-worker-run:
+	@echo "🚀 Starting storage worker..."
+	@uv run -m src.services.ingestion.ingestion_worker
+
+.PHONY: check-port kill-port health-check
 # ===============================
 # ===== PORT UTILITIES ==========
 # ===============================
@@ -138,6 +143,32 @@ kill-port:
 		exit 0; \
 	fi
 
+# Health check for services
+health-check:
+	@echo "🏥 Checking service health..."
+	@echo "  RabbitMQ..."
+	@if [ -z "$$RABBITMQ_USER" ] || [ -z "$$RABBITMQ_PASSWORD" ]; then \
+		echo "    ⚠️  Set RABBITMQ_USER and RABBITMQ_PASSWORD to check RabbitMQ API"; \
+	else \
+		python3 -c "import os,base64,urllib.request,sys; u=os.environ.get('RABBITMQ_USER'); p=os.environ.get('RABBITMQ_PASSWORD');\nreq=urllib.request.Request('http://localhost:15672/api/overview');\nreq.add_header('Authorization','Basic '+base64.b64encode(f'{u}:{p}'.encode()).decode());\n\ntry:\n    urllib.request.urlopen(req, timeout=5);\n    sys.exit(0)\nexcept Exception:\n    sys.exit(1)" \
+			&& echo "    ✅ RabbitMQ API" || echo "    ❌ RabbitMQ API"; \
+	fi
+	@echo "  PostgreSQL..."
+	@docker exec pdf_processing-database-1 pg_isready -U taskflow >/dev/null 2>&1 && echo "    ✅ PostgreSQL" || echo "    ❌ PostgreSQL"
+	@echo "  MinIO..."
+	@curl -s http://localhost:9000/minio/health/live >/dev/null 2>&1 && echo "    ✅ MinIO" || echo "    ❌ MinIO"
+	@echo "  Redis..."
+	@docker exec pdf_processing-redis-1 redis-cli ping >/dev/null 2>&1 && echo "    ✅ Redis" || echo "    ❌ Redis"
+	@echo ""
+	@echo "📊 RabbitMQ Vhosts and Permissions..."
+	@if [ -z "$$RABBITMQ_USER" ] || [ -z "$$RABBITMQ_PASSWORD" ]; then \
+		echo "  ⚠️  Set RABBITMQ_USER and RABBITMQ_PASSWORD to list vhosts"; \
+	else \
+		python3 -c "import os,base64,urllib.request,json; u=os.environ.get('RABBITMQ_USER'); p=os.environ.get('RABBITMQ_PASSWORD');\nreq=urllib.request.Request('http://localhost:15672/api/vhosts');\nreq.add_header('Authorization','Basic '+base64.b64encode(f'{u}:{p}'.encode()).decode());\nresp=urllib.request.urlopen(req, timeout=5);\nvhosts=[v['name'] for v in json.load(resp)];\nprint('  Vhosts:', ', '.join(vhosts))"; \
+	fi
+	@echo ""
+	@echo "✅ Health check complete"
+
 .PHONY: test test-verbose
 # ===============================
 # ============ TESTS ============
@@ -157,7 +188,7 @@ test-verbose:
 # ===============================
 type-check:
 	@echo "🔍 Running type checks..."
-	uv run pyrefly check src
+	uv run ty check src
 
 lint:
 	@echo "🔍 Running linter..."
@@ -187,8 +218,11 @@ clean-cache:
 # Start all services
 up:
 	@echo "🚀 Starting all services..."
-	@chmod +x docker/init_databases.sh
+	@chmod +x docker/init_databases.sh docker/init_rabbitmq.sh
 	docker-compose up -d
+	@echo "⏳ Waiting for services to be healthy..."
+	@sleep 15
+	@echo "✅ All services started! RabbitMQ vhosts auto-initialized."
 
 # Stop all services
 down:

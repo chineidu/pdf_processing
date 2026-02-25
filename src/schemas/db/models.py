@@ -189,14 +189,19 @@ class TaskSchema(BaseSchema):
         json_encoders={datetime: lambda v: v.isoformat() if v else None},
     )
 
+    # Identifiers
     id: int | None = Field(default=None, description="Unique identifier of the task.")
     task_id: str = Field(description="Unique identifier of the Celery task.")
     user_id: int | None = Field(
         default=None, description="ID of the user who initiated the task."
     )
+
+    # Status and type
     status: StatusTypeEnum = Field(
         description="Current status of the task (e.g., pending, processing, completed, failed, etc)."
     )
+
+    # File information
     file_upload_key: str = Field(
         description="S3 key of the uploaded file associated with the task."
     )
@@ -207,12 +212,21 @@ class TaskSchema(BaseSchema):
     file_type: MimeTypeEnum | None = Field(
         description="MIME type of the uploaded file."
     )
+    etag: str | None = Field(
+        default=None, description="ETag of the uploaded file in S3."
+    )
+
+    # Error information
     error_message: str | None = Field(
         default=None, description="Error message if the task failed."
     )
-    error_message: str | None = Field(
-        default=None, description="Error message if the task failed."
+
+    # Webhook information
+    webhook_url: str | None = Field(
+        default=None, description="URL to send webhook notifications to."
     )
+
+    # Timestamps
     created_at: datetime | None = Field(
         default=None, description="Creation date and time of the task."
     )

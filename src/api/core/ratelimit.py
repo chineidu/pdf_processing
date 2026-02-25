@@ -215,7 +215,7 @@ async def get_rate_limiter(
     else:
         user_id = (
             getattr(user, "external_id", None) or request.client.host or "anonymous"  # type: ignore
-        )  # type: ignore
+        )
 
     # Determine user tier (default to "free" or anonymous)
     if user and getattr(user, "tier", None):

@@ -112,7 +112,8 @@ config:
       enable_utc: true
     # Task routing and queues
     task_routes:
-      src.celery_app.tasks.periodic.*: { queue: "${config.queue_config.cleanups}" }
+      src.celery_app.tasks.periodic.*:
+        { queue: "${config.queue_config.cleanups}" }
 
     worker_config:
       worker_prefetch_multiplier: 1 # Busy workers are only assigned 1 task
@@ -139,3 +140,20 @@ config:
       result_backend_always_retry: true
       result_persistent: true
       result_backend_max_retries: 3
+
+  rabbitmq_config:
+    max_retries: 3
+    retry_delay: 1
+    connection_timeout: 5
+    heartbeat: 60
+    prefetch_count: 1
+    queue_names:
+      task_queue: storage_queue
+      result_queue: result_queue
+    topic_names:
+      storage_topic: minio_events
+    queue_priority: high
+    dlq_config:
+      dlq_name: storage_events_dlq
+      dlx_name: storage_events_dlx
+      ttl: 30000 # 30 seconds

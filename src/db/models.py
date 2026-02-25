@@ -218,6 +218,7 @@ class DBTask(Base):
     file_result_key: Mapped[str] = mapped_column(String(255), nullable=True)
     file_size_bytes: Mapped[int] = mapped_column(Integer, nullable=False)
     file_type: Mapped[str] = mapped_column(String(50), nullable=False)
+    etag: Mapped[str] = mapped_column(String(255), nullable=True)
 
     # Error
     error_message: Mapped[str] = mapped_column(Text, nullable=True)
@@ -272,16 +273,16 @@ async def aget_db_pool() -> AsyncDatabasePool:
 async def aget_db_session() -> AsyncGenerator[AsyncSession, None]:
     """Get a database session context manager.
 
-    Use this for manual session management with 'with' statements.
+    Use this for manual session management with 'async with' statements.
 
     Yields
     ------
-    Session
+    AsyncSession
         A database session
 
     Example
     -------
-        with aget_db_session() as session:
+        async with aget_db_session() as session:
             # use session here
     """
     db_pool = await aget_db_pool()
@@ -297,7 +298,7 @@ async def aget_db() -> AsyncGenerator[AsyncSession, None]:
 
     Yields
     ------
-    Session
+    AsyncSession
         An async database session that will be automatically closed after the request
     """
     db_pool = await aget_db_pool()

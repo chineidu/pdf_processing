@@ -83,8 +83,18 @@ class StatusTypeEnum(StrEnum):
     UPLOADED = "uploaded"
     VALIDATING = "validating"
     PROCESSING = "processing"
+    SKIPPED = "skipped"
     COMPLETED = "completed"
     FAILED = "failed"
+
+
+IDEMPOTENCY_ACTIVE_STATUSES: Final = frozenset(
+    [
+        StatusTypeEnum.VALIDATING.value,
+        StatusTypeEnum.PROCESSING.value,
+        StatusTypeEnum.COMPLETED.value,
+    ]
+)
 
 
 class APIKeyScopeEnum(StrEnum):
@@ -178,3 +188,9 @@ class PoolType(StrEnum):
 
     PREFORK = "prefork"
     THREADS = "threads"
+
+
+class PriorityEnum(StrEnum):
+    LOW = "low"
+    MEDIUM = "medium"
+    HIGH = "high"

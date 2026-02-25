@@ -7,8 +7,7 @@ class S3UploadMetadata:
     task_id: str
     uploaded_at: str
     correlation_id: str
-    environment: str
-    service: str = "taskflow"
+    service: str
     log_level: str = "INFO"
 
 

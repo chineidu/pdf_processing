@@ -55,7 +55,7 @@ def create_celery_app() -> Celery:
         result_backend_max_retries=app_config.celery_config.other_config.result_backend_max_retries,
         result_expires=app_config.celery_config.other_config.result_expires,
         # Broker config
-        broker_url=app_settings.rabbitmq_url,
+        broker_url=app_settings.rabbitmq_celery_url,
         # RabbitMQ transport options for priority queues
         broker_transport_options={
             "priority_steps": list(range(10)),

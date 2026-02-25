@@ -2,7 +2,7 @@
 
 import asyncio
 from pathlib import Path
-from typing import Any, AsyncGenerator
+from typing import Any, AsyncGenerator, BinaryIO
 
 import boto3
 import pendulum
@@ -29,7 +29,7 @@ def _upload_to_s3(
     bucket_name: str,
     object_name: str,
     extra_args: UploadResultExtraArgs,
-) -> bool:
+) -> str | None:
     task_id: str = extra_args.Metadata.task_id
     try:
         client.upload_file(
@@ -38,19 +38,57 @@ def _upload_to_s3(
             object_name,
             ExtraArgs=extra_args.model_dump(),
         )
-        return True
+        # Retrieve object metedata to capture the ETag (content hash) and confirm upload
+        response = client.head_object(Bucket=bucket_name, Key=object_name)
+        # ETags are usually enclosed in quotes, so we strip them for consistency
+        return response.get("ETag", "").strip('"')
 
     except ClientError as e:
         logger.error(f"[x] Failed to upload log for task {task_id}: {e}")
-        return False
+        return None
 
     except BotoCoreError as e:
         logger.error(f"[x] BotoCore error uploading log for task {task_id}: {e}")
-        return False
+        return None
 
     except Exception as exc:
         logger.error(f"[x] Unexpected error uploading log for task {task_id}: {exc}")
-        return False
+        return None
+
+
+def _upload_fileobj_to_s3(
+    client: Any,
+    fileobj: BinaryIO,
+    bucket_name: str,
+    object_name: str,
+    extra_args: UploadResultExtraArgs,
+) -> str | None:
+    task_id: str = extra_args.Metadata.task_id
+
+    try:
+        fileobj.seek(0)
+
+        client.upload_fileobj(
+            Fileobj=fileobj,
+            Bucket=bucket_name,
+            Key=object_name,
+            ExtraArgs=extra_args.model_dump(),
+        )
+
+        response = client.head_object(Bucket=bucket_name, Key=object_name)
+        return response.get("ETag", "").strip('"')
+
+    except ClientError as e:
+        logger.error(f"[x] Failed to upload log for task {task_id}: {e}")
+        return None
+
+    except BotoCoreError as e:
+        logger.error(f"[x] BotoCore error uploading log for task {task_id}: {e}")
+        return None
+
+    except Exception as exc:
+        logger.error(f"[x] Unexpected error uploading log for task {task_id}: {exc}")
+        return None
 
 
 def _download_from_s3(
@@ -152,6 +190,7 @@ class S3StorageService:
                 aws_secret_access_key=app_settings.AWS_SECRET_ACCESS_KEY.get_secret_value(),
                 region_name=app_settings.AWS_DEFAULT_REGION,
                 config=Config(
+                    max_pool_connections=50,  # Connection pooling for better performance
                     retries={"max_attempts": MAX_ATTEMPTS, "mode": "adaptive"},
                     signature_version="s3v4",
                 ),
@@ -175,38 +214,49 @@ class S3StorageService:
         filepath: str | Path,
         task_id: str,
         correlation_id: str,
-        environment: str,
+        operation: str = "input",
         max_allowed_size_bytes: int = MAX_FILE_SIZE_BYTES,
-    ) -> bool:
+    ) -> str | None:
         """Upload a file to S3 asynchronously.
+
+        Wraps synchronous boto3 upload in asyncio.to_thread() to avoid blocking the event loop.
+        File extension is extracted from filepath; S3 object key is derived as
+        `uploads/<task_id>/<operation>/<task_id>.<extension>`.
 
         Parameters
         ----------
         filepath : str | Path
-            Path to the file to upload.
+            Path to the file to upload. Extension is automatically extracted.
         task_id : str
-            Unique task identifier.
+            Unique task identifier used in the S3 object key and metadata.
         correlation_id : str
-            Correlation ID for tracing.
-        environment : str
-            Application environment (e.g., development, production).
+            Correlation ID for tracing; stored in S3 object metadata.
+        operation : str, optional
+            Operation type: 'input', 'output', 'temp', etc., by default "input"
         max_allowed_size_bytes : int, optional
             Maximum allowed file size in bytes, by default
             app_config.pdf_processing_config.max_file_size_bytes
 
         Returns
         -------
-        bool
-            True if upload succeeded, False otherwise.
+        str | None
+            The ETag of the uploaded object if successful, or None if the upload failed.
 
         Raises
         ------
         ValueError
             If the file size exceeds the maximum allowed size.
         RuntimeError
-            If the upload fails.
+            If the upload fails after size validation.
+
+        Notes
+        -----
+        - File metadata (task_id, correlation_id, timestamp) is embedded in S3 object metadata.
+        - Uses asyncio.to_thread() to run blocking boto3 calls asynchronously.
+        - ETag is extracted from HEAD object response after upload confirmation.
         """
         filepath = Path(filepath) if isinstance(filepath, str) else filepath
+        file_extension = filepath.suffix  # e.g., '.pdf'
         # Check the file size
         file_size = filepath.stat().st_size
         if file_size > max_allowed_size_bytes:
@@ -214,46 +264,148 @@ class S3StorageService:
                 f"Log size: {file_size:,} bytes exceeds max: {max_allowed_size_bytes:,} bytes"
             )
 
-        object_name = self.get_object_name(task_id)
+        object_name = self.get_object_name(task_id, file_extension, operation)
         extra_args = UploadResultExtraArgs(
             Metadata=S3UploadMetadata(
                 task_id=task_id,
                 uploaded_at=pendulum.now("UTC").isoformat(),
                 correlation_id=correlation_id,
-                environment=environment,
+                service="pdf_processing",
             ),
             ACL="private",
             ContentType="text/plain",
         )
-        success = await self._aupload_to_s3(
+        etag = await self._aupload_to_s3(
             filepath,
             object_name,
             extra_args,
         )
-        if not success:
+        if not etag:
             raise RuntimeError("S3 upload failed")
 
-        if success:
+        if etag:
             logger.info(
                 f"[+] Uploaded '{filepath}' to 's3://{self.bucket_name}/{object_name}'"
             )
 
-        return success
+        return etag
+
+    async def aupload_fileobj_to_s3(
+        self,
+        *,
+        fileobj: BinaryIO,
+        task_id: str,
+        correlation_id: str,
+        file_extension: str,
+        operation: str = "input",
+        max_allowed_size_bytes: int = MAX_FILE_SIZE_BYTES,
+    ) -> str | None:
+        """Upload a file-like object to S3 asynchronously.
+
+        Wraps synchronous boto3 upload in asyncio.to_thread() to avoid blocking the event loop.
+        File size is determined by seeking to EOF; pointer is reset by the helper before upload.
+        S3 object key is derived as `uploads/<task_id>/<operation>/<task_id>.<extension>`.
+
+        Parameters
+        ----------
+        fileobj : BinaryIO
+            File-like object to upload. Pointer position will be modified during size check
+            and upload; callers should not assume pointer position after this call.
+        task_id : str
+            Unique task identifier used in the S3 object key and metadata.
+        correlation_id : str
+            Correlation ID for tracing; stored in S3 object metadata.
+        file_extension : str
+            File extension (e.g., '.pdf', '.csv', '.json'). Leading dot optional.
+        operation : str, optional
+            Operation type: 'input', 'output', 'temp', etc., by default "input"
+        max_allowed_size_bytes : int, optional
+            Maximum allowed file size in bytes, by default
+            app_config.pdf_processing_config.max_file_size_bytes
+
+        Returns
+        -------
+        str | None
+            The ETag of the uploaded object if successful, or None if the upload failed.
+
+        Raises
+        ------
+        ValueError
+            If the file size exceeds the maximum allowed size.
+        RuntimeError
+            If the upload fails after size validation.
+
+        Notes
+        -----
+        - File pointer position is modified: seeked to EOF for size check, then reset to 0 by helper.
+        - File metadata (task_id, correlation_id, timestamp) is embedded in S3 object metadata.
+        - Uses asyncio.to_thread() to run blocking boto3 calls asynchronously.
+        - ETag is extracted from HEAD object response after upload confirmation.
+        - Do not assume file pointer position after this call—seek or reset as needed.
+        """
+        # Check the file size by seeking to the end and getting the position
+        fileobj.seek(0, 2)  # Move to end of file
+        file_size = fileobj.tell()
+        if file_size > max_allowed_size_bytes:
+            raise ValueError(
+                f"Log size: {file_size:,} bytes exceeds max: {max_allowed_size_bytes:,} bytes"
+            )
+
+        # Normalize file extension
+        if not file_extension.startswith("."):
+            file_extension = f".{file_extension}"
+        object_name = self.get_object_name(task_id, file_extension, operation)
+        extra_args = UploadResultExtraArgs(
+            Metadata=S3UploadMetadata(
+                task_id=task_id,
+                uploaded_at=pendulum.now("UTC").isoformat(),
+                correlation_id=correlation_id,
+                service="pdf_processing",
+            ),
+            ACL="private",
+            ContentType="text/plain",
+        )
+        etag = await asyncio.to_thread(
+            _upload_fileobj_to_s3,
+            self.s3_client,
+            fileobj,
+            self.bucket_name,
+            object_name,
+            extra_args,
+        )
+        if not etag:
+            raise RuntimeError("S3 upload failed")
+
+        if etag:
+            logger.info(
+                f"[+] Uploaded file-like object to 's3://{self.bucket_name}/{object_name}'"
+            )
+
+        return etag
 
     async def adownload_file_from_s3(
         self,
         *,
         filepath: str | Path,
         task_id: str,
+        file_extension: str,
+        operation: str = "input",
     ) -> bool:
-        """Download a file to S3 asynchronously.
+        """Download a file from S3 asynchronously.
+
+        S3 object key is derived as `uploads/<task_id>/<operation>/<task_id>.<extension>`.
 
         Parameters
         ----------
         filepath : str | Path
-            Path to the file to download.
+            Path where downloaded file will be saved.
         task_id : str
             Unique task identifier.
+        file_extension : str
+            File extension (e.g., '.pdf', '.csv'). Leading dot optional.
+        operation : str, optional
+            Operation type: 'input', 'output', 'temp', etc., by default "input"
+
 
         Returns
         -------
@@ -266,7 +418,7 @@ class S3StorageService:
             If the download fails.
         """
         filepath = Path(filepath) if isinstance(filepath, str) else filepath
-        object_name: str = self.get_object_name(task_id)
+        object_name: str = self.get_object_name(task_id, file_extension, operation)
         success: bool = await self._adownload_from_s3(filepath, object_name)
         if not success:
             raise RuntimeError("S3 download failed")
@@ -276,9 +428,21 @@ class S3StorageService:
 
         return success
 
-    async def aget_s3_stream(self, task_id: str) -> Any:
-        """Asynchronously get a streaming body from S3."""
-        object_name = self.get_object_name(task_id)
+    async def aget_s3_stream(
+        self, task_id: str, file_extension: str, operation: str = "input"
+    ) -> Any:
+        """Asynchronously get a streaming body from S3.
+
+        Parameters
+        ----------
+        task_id : str
+            Unique task identifier.
+        file_extension : str
+            File extension (e.g., '.pdf', '.csv').
+        operation : str, optional
+            Operation type: 'input', 'output', 'temp', etc., by default "input"
+        """
+        object_name = self.get_object_name(task_id, file_extension, operation)
         return await asyncio.to_thread(
             _get_s3_stream, self.s3_client, self.bucket_name, object_name
         )
@@ -311,23 +475,83 @@ class S3StorageService:
                 logger.error(f"S3 Error: {e}")
             return False
 
-    def get_object_name(self, task_id: str) -> str:
-        """Get the S3 object name for a given task ID."""
-        return f"uploads/{task_id}.pdf"
+    def get_object_name(
+        self, task_id: str, file_extension: str, operation: str = "input"
+    ) -> str:
+        """Get the S3 object name for a given task ID, file extension, and operation.
 
-    def get_s3_object_url(self, task_id: str) -> str:
-        """Get the S3 object URL format."""
-        object_name: str = self.get_object_name(task_id)
+        Parameters
+        ----------
+        task_id : str
+            Unique task identifier.
+        file_extension : str
+            File extension (e.g., '.pdf', '.csv'). Leading dot optional.
+        operation : str, optional
+            Operation type: 'input', 'output', 'temp', etc., by default "input"
+
+        Returns
+        -------
+        str
+            S3 object key: `uploads/{operation}/{task_id}{file_extension}`
+
+        Examples
+        --------
+        >>> get_object_name('abc-123', '.pdf')
+        'uploads/input/abc-123.pdf'
+
+        >>> get_object_name('abc-123', 'csv', operation='output')
+        'uploads/output/abc-123.csv'
+        """
+        if not file_extension.startswith("."):
+            file_extension = f".{file_extension}"
+        return f"uploads/{operation}/{task_id}{file_extension}"
+
+    def get_s3_object_url(
+        self, task_id: str, file_extension: str, operation: str = "input"
+    ) -> str:
+        """Get the S3 object URL format.
+
+        Parameters
+        ----------
+        task_id : str
+            Unique task identifier.
+        file_extension : str
+            File extension (e.g., '.pdf', '.csv').
+        operation : str, optional
+            Operation type: 'input', 'output', 'temp', etc., by default "input"
+
+        Returns
+        -------
+        str
+            Full S3 URL: `{endpoint}/{bucket}/{object_key}`
+        """
+        object_name: str = self.get_object_name(task_id, file_extension, operation)
         return f"{self.s3_client.meta.endpoint_url}/{self.bucket_name}/{object_name}"
 
     async def aget_presigned_url(
         self,
         task_id: str,
+        file_extension: str,
+        operation: str = "input",
         expiration: int = 3600,
         content_type: str | None = None,
     ) -> dict[str, str]:
-        """Asynchronously get a presigned URL for the given task ID."""
-        object_name = self.get_object_name(task_id)
+        """Asynchronously get a presigned URL for the given task ID.
+
+        Parameters
+        ----------
+        task_id : str
+            Unique task identifier.
+        file_extension : str
+            File extension (e.g., '.pdf', '.csv').
+        operation : str, optional
+            Operation type: 'input', 'output', 'temp', etc., by default "input"
+        expiration : int, optional
+            URL expiration time in seconds, by default 3600
+        content_type : str, optional
+            MIME type for the object, by default None
+        """
+        object_name = self.get_object_name(task_id, file_extension, operation)
         return await asyncio.to_thread(
             _generate_presigned_url,
             self.s3_client,
@@ -342,7 +566,7 @@ class S3StorageService:
         filepath: str | Path,
         object_name: str,
         extra_args: UploadResultExtraArgs,
-    ) -> bool:
+    ) -> str | None:
         """Helper function to upload a file to S3 asynchronously."""
         return await asyncio.to_thread(
             _upload_to_s3,
@@ -402,7 +626,6 @@ class S3StorageFileUploadPolicy:
         filepath: str | Path,
         task_id: str,
         correlation_id: str,
-        environment: str,
         max_allowed_size_bytes: int = MAX_FILE_SIZE_BYTES,
     ) -> S3StorageUploadResult:
         """Upload a file to S3 with retry logic.
@@ -415,8 +638,6 @@ class S3StorageFileUploadPolicy:
             Unique task identifier.
         correlation_id : str
             Correlation ID for tracing.
-        environment : str
-            Application environment (e.g., development, production).
         max_allowed_size_bytes : int, optional
             Maximum allowed file size in bytes, by default
             app_config.pdf_processing_config.max_file_size_bytes
@@ -434,14 +655,16 @@ class S3StorageFileUploadPolicy:
                     filepath=filepath,
                     task_id=task_id,
                     correlation_id=correlation_id,
-                    environment=environment,
                     max_allowed_size_bytes=max_allowed_size_bytes,
                 )
                 if success:
+                    file_ext = Path(filepath).suffix
                     return S3StorageUploadResult(
                         attempts=attempt,
-                        s3_key=self.storage_service.get_object_name(task_id),
-                        s3_url=self.storage_service.get_s3_object_url(task_id),
+                        s3_key=self.storage_service.get_object_name(task_id, file_ext),
+                        s3_url=self.storage_service.get_s3_object_url(
+                            task_id, file_ext
+                        ),
                     )
             except Exception as e:
                 last_exception = e

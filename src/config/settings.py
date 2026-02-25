@@ -67,9 +67,9 @@ class BaseConfig(BaseSettings):
     RABBITMQ_PORT: int = 5672
     RABBITMQ_DEFAULT_USER: str = "guest"
     RABBITMQ_DEFAULT_PASS: SecretStr = SecretStr("guest")
-    RABBITMQ_VIRTUAL_HOST: str = "/"
     RABBITMQ_HEARTBEAT: int = 600  # Heartbeat interval in seconds
     RABBITMQ_EXPIRATION_MS: int = 1800000
+    RABBITMQ_STORAGE_URL: str = ""
 
     # ===== CELERY =====
     C_FORCE_ROOT: int = 1  # Suppress root user warning
@@ -91,6 +91,10 @@ class BaseConfig(BaseSettings):
     WEBHOOK_SECRET_KEY: SecretStr = SecretStr("your_webhook_secret_key_here")
     WEBHOOK_TIMEOUT_SECONDS: int = 5  # Timeout for webhook requests in seconds
     WEBHOOK_MAX_RETRIES: int = 3  # Maximum number of retry attempts for failed webhooks
+
+    # ===== VHOSTS =====
+    STORAGE_VHOST: str = "storage_events"
+    CELERY_VHOST: str = "/celery_tasks"
 
     @field_validator(
         "PORT", "POSTGRES_PORT", "REDIS_PORT", "AWS_S3_PORT", mode="before"
@@ -188,10 +192,10 @@ class BaseConfig(BaseSettings):
         return url
 
     @property
-    def rabbitmq_url(self) -> str:
-        """Constructs the RabbitMQ connection URL."""
+    def rabbitmq_celery_url(self) -> str:
+        """Constructs the RabbitMQ connection URL for Celery."""
         passwd: str = quote(self.RABBITMQ_DEFAULT_PASS.get_secret_value(), safe="")
-        raw_vhost: str = (self.RABBITMQ_VIRTUAL_HOST or "").strip()
+        raw_vhost: str = (self.CELERY_VHOST or "").strip()
 
         # Normalize vhost to ensure it starts with a slash
         if not raw_vhost:
@@ -201,6 +205,25 @@ class BaseConfig(BaseSettings):
                 raw_vhost if raw_vhost.startswith("/") else f"/{raw_vhost}"
             )
         encoded_vhost: str = quote(normalized_vhost, safe="")
+
+        return (
+            f"amqp://{self.RABBITMQ_DEFAULT_USER}:{passwd}@"
+            f"{self.RABBITMQ_HOST}:{self.RABBITMQ_PORT}/{encoded_vhost}"
+            f"?heartbeat={self.RABBITMQ_HEARTBEAT}"
+        )
+
+    @property
+    def rabbitmq_storage_url(self) -> str:
+        """Constructs the RabbitMQ connection URL for storage events."""
+        passwd: str = quote(self.RABBITMQ_DEFAULT_PASS.get_secret_value(), safe="")
+        raw_vhost: str = (self.STORAGE_VHOST or "").strip()
+
+        # Keep storage vhost as provided (supports both "storage_events" and "/storage_events").
+        # For root vhost, use encoded "/".
+        if not raw_vhost:
+            encoded_vhost: str = quote("/", safe="")
+        else:
+            encoded_vhost = quote(raw_vhost, safe="")
 
         return (
             f"amqp://{self.RABBITMQ_DEFAULT_USER}:{passwd}@"

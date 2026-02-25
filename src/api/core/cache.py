@@ -49,7 +49,7 @@ def setup_cache() -> Cache:
         if db != 0:
             cache_kwargs["db"] = db
 
-        return Cache(Cache.REDIS, **cache_kwargs)  # type: ignore
+        return Cache(Cache.REDIS, **cache_kwargs)
 
     except Exception as e:
         warnings.warn(
@@ -57,7 +57,7 @@ def setup_cache() -> Cache:
             stacklevel=2,
         )
         # Fallback to in-memory cache
-        return Cache(Cache.MEMORY, serializer=JsonSerializer(), namespace="main")  # type: ignore
+        return Cache(Cache.MEMORY, serializer=JsonSerializer(), namespace="main")
 
 
 def cached(
@@ -113,7 +113,7 @@ def cached(
             )
 
             # Try to get from cache
-            cached_response = await cache.get(cache_key)  # type: ignore
+            cached_response = await cache.get(cache_key)
             if cached_response:
                 logger.info(f"Cache hit for key: {cache_key}")
 
@@ -140,7 +140,7 @@ def cached(
                 # Serialize the response to a JSON-compatible format
                 serialized = jsonable_encoder(func_response)
                 # Store in cache
-                await cache.set(cache_key, serialized, ttl=ttl)  # type: ignore
+                await cache.set(cache_key, serialized, ttl=ttl)
 
             except Exception as e:
                 logger.warning(f"Skipping cache for key {cache_key}: {e}")

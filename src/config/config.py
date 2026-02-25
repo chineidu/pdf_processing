@@ -6,6 +6,7 @@ from omegaconf import DictConfig, OmegaConf
 from pydantic import BaseModel, Field
 
 from src import ROOT
+from src.schemas.types import PriorityEnum
 
 
 @dataclass(slots=True, kw_only=True)
@@ -275,6 +276,61 @@ class CeleryConfig:
     other_config: OtherConfig = field(metadata={"description": "Other configuration"})
 
 
+@dataclass(slots=True, kw_only=True)
+class QueueNames:
+    task_queue: str = field(metadata={"description": "Name of the task queue"})
+    result_queue: str = field(metadata={"description": "Name of the result queue"})
+
+
+@dataclass(slots=True, kw_only=True)
+class TopicNames:
+    storage_topic: str = field(
+        metadata={"description": "Name of the storage event topic"}
+    )
+
+
+@dataclass(slots=True, kw_only=True)
+class DLQConfig:
+    dlq_name: str = field(metadata={"description": "Name of the dead-letter queue"})
+    dlx_name: str = field(metadata={"description": "Name of the dead-letter exchange"})
+    ttl: int = field(
+        metadata={"description": "Time-to-live for messages in milliseconds"}
+    )
+
+
+@dataclass(slots=True, kw_only=True)
+class RabbitMQConfig:
+    max_retries: int = field(
+        default=3, metadata={"description": "Maximum number of connection retries"}
+    )
+    retry_delay: int = field(
+        default=1,
+        metadata={"description": "Delay between connection retries in seconds"},
+    )
+    connection_timeout: int = field(
+        default=5, metadata={"description": "Connection timeout in seconds"}
+    )
+    heartbeat: int = field(
+        default=60, metadata={"description": "Heartbeat interval in seconds"}
+    )
+    prefetch_count: int = field(
+        default=5, metadata={"description": "Number of messages to prefetch"}
+    )
+    queue_names: QueueNames = field(
+        metadata={"description": "Names of the RabbitMQ queues"}
+    )
+    topic_names: TopicNames = field(
+        metadata={"description": "Names of the RabbitMQ topics"}
+    )
+    queue_priority: PriorityEnum = field(
+        default=PriorityEnum.MEDIUM,
+        metadata={"description": "Default priority level for the queues"},
+    )
+    dlq_config: DLQConfig = field(
+        metadata={"description": "Dead-letter queue configuration"}
+    )
+
+
 class AppConfig(BaseModel):
     """Application configuration with validation."""
 
@@ -292,6 +348,7 @@ class AppConfig(BaseModel):
         description="Configuration settings for task queues"
     )
     celery_config: CeleryConfig = Field(description="Celery configuration")
+    rabbitmq_config: RabbitMQConfig = Field(description="RabbitMQ configuration")
 
 
 config_path: Path = ROOT / "src/config/config.yaml"
