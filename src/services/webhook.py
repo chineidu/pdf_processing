@@ -34,6 +34,14 @@ class WebhookService:
             ),
         )
 
+    async def __aenter__(self) -> "WebhookService":
+        """Async context manager entry."""
+        return self
+
+    async def __aexit__(self, exc_type, exc_val, exc_tb) -> None:  # noqa: ANN001
+        """Async context manager exit - ensures client is closed."""
+        await self.aclose()
+
     async def aclose(self) -> None:
         """Close the HTTP client session."""
         await self.client.aclose()
@@ -42,24 +50,40 @@ class WebhookService:
         """Generate HMAC signature for the given payload."""
         return hmac.new(self.secret_key, payload.encode(), hashlib.sha256).hexdigest()
 
-    async def asend_webhook(self, payload: dict[str, Any]) -> bool:
+    async def asend_webhook(
+        self,
+        payload: dict[str, Any],
+        webhook_url: str | None = None,
+        event_name: str | None = None,
+    ) -> bool:
         """Asynchronously send a webhook notification with retries."""
-        payload_str = json.dumps(payload)
+        target_url = webhook_url or self.webhook_url
+        if not target_url:
+            logger.info("Webhook URL not configured. Skipping delivery.")
+            return False
+
+        payload_str = json.dumps(payload, separators=(",", ":"))
         signature = self.generate_signature(payload_str)
+
+        resolved_event = event_name
+        if not resolved_event:
+            resolved_event = (
+                "task.completed"
+                if payload.get("status") == "completed"
+                else "task.failed"
+            )
 
         headers = {
             "Content-Type": "application/json",
             "X-Webhook-Signature": signature,
-            "X-Webhook-Event": "task.completed"
-            if payload.get("status") == "completed"
-            else "task.failed",
+            "X-Webhook-Event": resolved_event,
         }
 
         for attempt in range(1, self.max_retries + 1):
             try:
                 response = await self.client.post(
-                    self.webhook_url,
-                    data=payload,
+                    target_url,
+                    content=payload_str,
                     headers=headers,
                 )
                 response.raise_for_status()

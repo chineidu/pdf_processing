@@ -41,6 +41,11 @@ async def generate_presigned_urls(
         None,
         description="Optional content type for the file to be uploaded (e.g. application/pdf)",
     ),
+    webhook_url: str | None = Query(
+        None,
+        description="Optional webhook URL to receive task completion/failure notifications",
+        max_length=255,
+    ),
     db: AsyncSession = Depends(aget_db),  # noqa: ARG001
 ) -> PresignedURLResponse:
     """Route for generating presigned URLs for file uploads"""
@@ -55,7 +60,6 @@ async def generate_presigned_urls(
     task_id = str(uuid.uuid4())
 
     # Determine file extension from content_type or use default
-    file_extension = ".pdf"
     if content_type:
         # Map common MIME types to extensions
         mime_to_ext = {
@@ -91,6 +95,7 @@ async def generate_presigned_urls(
         file_result_key="",
         file_size_bytes=0,
         file_type=content_type if content_type else None,
+        webhook_url=webhook_url,
     )
 
     await task_repo.acreate_task(task)
@@ -101,28 +106,3 @@ async def generate_presigned_urls(
         expires_at=presigned_url_data["expires_at"],
         content_type=content_type,
     )
-
-
-@router.post("/webhooks/s3-event", status_code=status.HTTP_200_OK)
-async def handle_s3_event(request: Request) -> dict[str, str]:
-    """Handle S3 event notifications."""
-    try:
-        body = await request.json()
-        records = body.get("Records", [])
-        for record in records:
-            s3_info = record.get("s3", {})
-            s3_key = s3_info.get("object", {}).get("key")
-            if not s3_key or not s3_key.startswith("uploads/"):
-                continue
-            parts = s3_key.split("/")
-            if len(parts) >= 2:
-                task_id = parts[1]
-                logger.info(f"Triggering processing for task {task_id}")
-                # Trigger Celery task asynchronously
-                from src.celery_app.tasks.processor import process_data
-
-                process_data.delay(task_id, analysis_id=task_id)
-        return {"status": "ok"}
-    except Exception as e:
-        logger.error(f"Error handling S3 event: {e}", exc_info=True)
-        return {"status": "error", "message": str(e)}

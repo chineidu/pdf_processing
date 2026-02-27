@@ -2,7 +2,7 @@
 Simple webhook server for testing PDF pipeline notifications.
 
 Usage:
-    python webhook_server.py
+    uv run webhook_server.py
 
 Then use this URL when creating upload slots:
     - Local: http://localhost:3000/webhook
@@ -13,17 +13,20 @@ import hashlib
 import hmac
 import json
 from datetime import datetime
+from typing import Any
 
 import uvicorn
 from fastapi import FastAPI, Header, HTTPException, Request
+
+from src.config import app_settings
 
 app = FastAPI(title="PDF Pipeline Webhook Server")
 
 # Store received webhooks (for demo purposes)
 received_webhooks = []
 
-# Your secret key (must match the one in PDF pipeline .env)
-SECRET_KEY = "your-secret-key-for-hmac-signing-change-this-in-production"
+# Your secret key (must match WEBHOOK_SECRET_KEY in .env)
+SECRET_KEY = app_settings.WEBHOOK_SECRET_KEY.get_secret_value()
 
 
 def verify_signature(payload: bytes, signature: str) -> bool:
@@ -33,7 +36,7 @@ def verify_signature(payload: bytes, signature: str) -> bool:
 
 
 @app.get("/")
-async def root():
+async def root() -> dict[str, Any]:
     """Root endpoint - show received webhooks."""
     return {
         "message": "PDF Pipeline Webhook Server",
@@ -48,7 +51,7 @@ async def handle_webhook(
     request: Request,
     x_webhook_signature: str = Header(None),
     x_webhook_event: str = Header(None),
-):
+) -> dict[str, Any]:
     """
     Receive webhook notifications from PDF pipeline.
 
@@ -131,13 +134,13 @@ async def handle_webhook(
 
 
 @app.get("/webhooks")
-async def list_webhooks():
+async def list_webhooks() -> dict[str, Any]:
     """List all received webhooks (for debugging)."""
     return {"count": len(received_webhooks), "webhooks": received_webhooks}
 
 
 @app.delete("/webhooks")
-async def clear_webhooks():
+async def clear_webhooks() -> dict[str, Any]:
     """Clear webhook history."""
     received_webhooks.clear()
     return {"status": "cleared"}

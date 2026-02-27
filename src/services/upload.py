@@ -1,3 +1,7 @@
+"""
+This module provides functionality to upload files (via HTTP) to S3 using presigned URLs.
+"""
+
 from pathlib import Path
 from typing import Any
 from urllib.parse import urlencode
@@ -5,6 +9,7 @@ from urllib.parse import urlencode
 from anyio import open_file
 
 from src import ROOT, create_logger
+from src.config import app_settings
 from src.db.models import aget_db_session
 from src.db.repositories.task_repository import TaskRepository
 from src.schemas.services.upload import UploadedResult
@@ -14,15 +19,14 @@ from src.utilities.client import HTTPXClient
 logger = create_logger(name=__name__)
 
 
-async def upload_file_to_s3(
+async def _aget_presigned_url(
     client: HTTPXClient,
-    filepath: str | Path,
     url: str,
     token: str,
     content_type: str | None = None,
-    analysis_id: str | None = "unknown",
-) -> UploadedResult:
-    """Uploads a file to S3 and returns the result as a dictionary."""
+    webhook_url: str | None = None,
+) -> dict[str, Any]:
+    """Helper function to get a presigned URL for uploading a file to S3."""
 
     headers: dict[str, str] = {
         "accept": "application/json",
@@ -33,13 +37,36 @@ async def upload_file_to_s3(
         raise ValueError("HTTPXClient is not initialized.")
 
     # Generate the presigned URL for uploading the file
-    presign_url = url
+    _url: str = url
+    query_params: dict[str, str] = {}
+
     if content_type:
-        presign_url = f"{url}?{urlencode({'content_type': content_type})}"
+        query_params["content_type"] = content_type
+    if webhook_url:
+        query_params["webhook_url"] = webhook_url
+    if query_params:
+        _url = f"{url}?{urlencode(query_params)}"
 
-    result: dict[str, Any] = await client.post(presign_url, headers=headers)
+    result: dict[str, Any] = await client.post(_url, headers=headers)
+    return result
 
-    # Upload the file to S3 using the presigned URL
+
+async def upload_file_to_s3(
+    client: HTTPXClient,
+    filepath: str | Path,
+    url: str,
+    token: str,
+    content_type: str | None = None,
+    analysis_id: str | None = "unknown",
+    webhook_url: str | None = None,
+) -> UploadedResult:
+    """Uploads a file to S3 and returns the result as a dictionary."""
+    # Step 1: Get a presigned URL for uploading the file
+    result: dict[str, Any] = await _aget_presigned_url(
+        client, url, token, content_type, webhook_url
+    )
+
+    # Step 2: Upload the file to S3 using the presigned URL
     if result["success"]:
         presigned_url = result["data"]["url"]
         task_id = result["data"]["taskId"]
@@ -59,7 +86,7 @@ async def upload_file_to_s3(
                 if upload_result.get("headers")
                 else None
             )
-
+            # Step 3: Update the task status in the database based on the upload result
             if upload_result["success"]:
                 async with aget_db_session() as session:
                     task_repo = TaskRepository(db=session)
@@ -117,14 +144,16 @@ async def upload_file_to_s3(
     return UploadedResult(**response)  # type:ignore
 
 
+# -------------------------------------------------------------------
 # For testing purposes
+# -------------------------------------------------------------------
 client = HTTPXClient()
 
 
 async def test_upload() -> None:
     """Test the upload_file_to_s3 function with a sample file."""
 
-    filepath: Path = ROOT / Path("data/ML_role.pdf")
+    filepath: Path = ROOT / Path("data/AI_roadmap.pdf")
     analysis_id = "unknown"
     base_url: str = "http://0.0.0.0:8000"
     url = f"{base_url}/api/v1/presigned-urls"
@@ -142,7 +171,13 @@ async def test_upload() -> None:
 
         token = token_dict["data"]["access_token"]
         result = await upload_file_to_s3(
-            client, filepath, url, token, content_type, analysis_id
+            client,
+            filepath,
+            url,
+            token,
+            content_type,
+            analysis_id,
+            webhook_url=app_settings.WEBHOOK_URL,
         )
         print(result)
 

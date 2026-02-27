@@ -135,6 +135,7 @@ class TaskRepository:
             - 'file_type' (MimeTypeEnum, optional): MIME type of the uploaded file
             - 'etag' (str, optional): ETag of the uploaded file in S3.
             - 'error_message' (str, optional): Error message if the task failed.
+            - 'webhook_delivered_at' (datetime, optional): Timestamp for webhook delivery.
         add_completed_at : bool, optional
             If True and status is a terminal state (`completed` or `failed`), set
             `completed_at` when it is currently empty.
@@ -166,6 +167,7 @@ class TaskRepository:
             "file_type",
             "etag",
             "error_message",
+            "webhook_delivered_at",
         }
         has_changes = False
 

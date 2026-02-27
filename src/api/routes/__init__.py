@@ -1,7 +1,8 @@
-from src.api.routes.v1 import auth, health, presigned_urls
+from src.api.routes.v1 import auth, health, presigned_urls, tasks
 
 __all__ = [
     "auth",
     "health",
     "presigned_urls",
+    "tasks",
 ]

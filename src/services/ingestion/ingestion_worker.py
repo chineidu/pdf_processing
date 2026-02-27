@@ -38,6 +38,7 @@ def _extract_task_id_from_storage_key(storage_key: str) -> str | None:
     Handles keys that may include bucket prefix such as
     `pdf-processor/uploads/<task_id>.pdf`.
     """
+    # URL-decode the storage key to handle any encoded characters (e.g. spaces, special chars)
     normalized_key = unquote(storage_key)
     name = PurePosixPath(normalized_key).name
     if not name.lower().endswith(".pdf"):
@@ -72,7 +73,6 @@ def dispatch_to_celery(task_id: str, etag: str) -> None:
         kwargs={
             "task_id": task_id,
             "etag": etag,
-            "analysis_id": "auto-triggered-webhook",
         },
     )
     logger.info(f"Successfully dispatched Celery task for S3 key: {etag}")
@@ -94,36 +94,45 @@ async def aprocess_pdf_documents(
         f"Processing message | task_id={task_id} | correlation_id={correlation_id} | time={timestamp}"
     )
 
-    for record in payload.records:
-        etag: str = record.storage_entity.object.etag
-        storage_key: str = record.storage_entity.object.key
-        derived_task_id = _extract_task_id_from_storage_key(storage_key)
+    async with aget_db_session() as session:
+        task_repo = TaskRepository(db=session)
 
-        # Skip output files (only process input files)
-        if "/output/" in storage_key:
-            logger.info(f"Skipping output file: {storage_key}")
-            continue
+        for record in payload.records:
+            etag: str = record.storage_entity.object.etag
+            storage_key: str = record.storage_entity.object.key
+            derived_task_id = _extract_task_id_from_storage_key(storage_key)
+            task_id_to_update = derived_task_id or task_id
 
-        # Filetype check (PDF only)
-        if not storage_key.lower().endswith(".pdf"):
-            logger.warning(f"Skipping non-PDF file: {storage_key}")
-            continue
+            # Skip output files (only process input files)
+            if "/output/" in storage_key:
+                logger.info(f"Skipping output file: {storage_key}")
+                continue
 
-        # Idempotency check using the etag
-        is_duplicate = await check_idempotency(etag)
-        if is_duplicate:
-            logger.info(f"Duplicate file detected (etag: {etag}), skipping processing.")
-            async with aget_db_session() as session:
-                task_repo = TaskRepository(db=session)
+            # Filetype check (PDF only)
+            if not storage_key.lower().endswith(".pdf"):
+                logger.warning(f"Skipping non-PDF file: {storage_key}")
+                continue
+
+            # Idempotency check using the etag
+            is_duplicate = await check_idempotency(etag)
+            if is_duplicate:
+                logger.info(
+                    f"Duplicate file detected (etag: {etag}), skipping processing."
+                )
                 await task_repo.aupdate_task(
-                    task_id=derived_task_id or task_id,
+                    task_id=task_id_to_update,
                     update_data={"status": StatusTypeEnum.SKIPPED.value},
                 )
-            continue
+                continue
 
-        # Dispatch to Celery in a thread to avoid blocking the event loop
-        dispatch_task_id = derived_task_id or task_id
-        await asyncio.to_thread(dispatch_to_celery, dispatch_task_id, etag)
+            # Update to validating only if not duplicate
+            await task_repo.aupdate_task(
+                task_id=task_id_to_update,
+                update_data={"status": StatusTypeEnum.VALIDATING.value},
+            )
+
+            # Dispatch to Celery in a thread to avoid blocking the event loop
+            await asyncio.to_thread(dispatch_to_celery, task_id_to_update, etag)
 
 
 # ----- RabbitMQ Consumer -----
@@ -178,6 +187,9 @@ class IngestionWorker(BaseRabbitMQ):
             durable=durable,
         )
 
+        # Topic exchange: Routes messages based on routing key patterns
+        # MinIO publishes events like "s3.objectcreated.put" -> we subscribe to "s3.objectcreated.#"
+        # This lets us receive all S3 object creation events regardless of the upload method
         routing_key: str = "s3.objectcreated.#"
         storage_topic: str = self.config.rabbitmq_config.topic_names.storage_topic
         storage_exchange = await self.aensure_topic(storage_topic, durable=False)

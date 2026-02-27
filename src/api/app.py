@@ -16,7 +16,7 @@ from src.api.core.metrics import model_label
 from src.api.core.middleware import MIDDLEWARE_STACK
 
 # from src.api.routes import admin, apikeys, auth, health, predict, services
-from src.api.routes import auth, health, presigned_urls
+from src.api.routes import auth, health, presigned_urls, tasks
 from src.config import app_config, app_settings
 from src.observability.telemetry import setup_telemetry
 
@@ -81,6 +81,7 @@ def create_application() -> FastAPI:
     # app.include_router(admin.router, prefix=prefix)
     app.include_router(health.router, prefix=prefix)
     app.include_router(presigned_urls.router, prefix=prefix)
+    app.include_router(tasks.router, prefix=prefix)
     # app.include_router(predict.router, prefix=prefix)
     # app.include_router(services.router, prefix=prefix)
 
