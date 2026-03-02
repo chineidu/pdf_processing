@@ -69,7 +69,6 @@ def on_worker_ready(sender: Any | None = None, **kwargs: Any) -> None:  # noqa: 
         _setup_environment()
 
         pipeline_options = PdfPipelineOptions()
-        # --- If you want to enable OCR ---
         pipeline_options.do_ocr = PERFORM_OCR
         pipeline_options.ocr_options = EasyOcrOptions()
         pipeline_options.ocr_options.use_gpu = USE_GPU

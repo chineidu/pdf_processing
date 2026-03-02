@@ -25,14 +25,17 @@ dependencies = [
     "opentelemetry-instrumentation-sqlalchemy>=0.60b1",
     "opentelemetry-sdk>=1.39.1",
     "passlib>=1.7.4",
+    "pdf-oxide>=0.3.9",
     "pendulum>=3.2.0",
     "prometheus-client>=0.24.1",
     "prometheus-fastapi-instrumentator>=7.1.0",
     "psycopg-binary>=3.3.3", # Required by Celery Synchrohnous transport
     "pydantic-settings>=2.13.0",
+    "pymupdf>=1.27.1",
     "python-jose>=3.5.0",
     "python-json-logger>=4.0.0",
     "python-magic>=0.4.27",
+    # "PyPDF2>=4.0.0",
     "redis>=7.2.0",
     "sqlalchemy>=2.0.46",
 ]

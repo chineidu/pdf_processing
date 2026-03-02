@@ -46,6 +46,12 @@ async def generate_presigned_urls(
         description="Optional webhook URL to receive task completion/failure notifications",
         max_length=255,
     ),
+    page_count: int | None = Query(
+        None,
+        ge=1,
+        lt=1000,
+        description="Optional page count for the upload. Used for queue routing without re-downloading.",
+    ),
     db: AsyncSession = Depends(aget_db),  # noqa: ARG001
 ) -> PresignedURLResponse:
     """Route for generating presigned URLs for file uploads"""
@@ -62,7 +68,7 @@ async def generate_presigned_urls(
     # Determine file extension from content_type or use default
     if content_type:
         # Map common MIME types to extensions
-        mime_to_ext = {
+        mime_to_ext: dict[str, str] = {
             "application/pdf": ".pdf",
             "text/csv": ".csv",
             "application/json": ".json",
@@ -74,11 +80,27 @@ async def generate_presigned_urls(
             ".pdf",
         )
 
+    metadata: dict[str, str] | None = None
+    upload_headers: dict[str, str] | None = None
+    if page_count:
+        metadata = {"page-count": str(page_count)}
+        upload_headers = {"x-amz-meta-page-count": str(page_count)}
+
+    if content_type:
+        content_type_value = (
+            content_type.value if hasattr(content_type, "value") else content_type
+        )
+        if upload_headers is None:
+            upload_headers = {"Content-Type": content_type_value}
+        else:
+            upload_headers["Content-Type"] = content_type_value
+
     presigned_url_data: dict[str, str] = await s3_service.aget_presigned_url(
         task_id=task_id,
         file_extension=file_extension,
         expiration=EXPIRATION_SECONDS,
         content_type=content_type,
+        metadata=metadata,
     )
 
     if not presigned_url_data:
@@ -105,4 +127,5 @@ async def generate_presigned_urls(
         url=presigned_url_data["url"],
         expires_at=presigned_url_data["expires_at"],
         content_type=content_type,
+        upload_headers=upload_headers,
     )

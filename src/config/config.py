@@ -124,8 +124,8 @@ class PrioritySizes:
     high_priority: int = field(
         default=1500, metadata={"description": "Size of the high priority queue"}
     )
-    normal_priority: int = field(
-        default=2500, metadata={"description": "Size of the normal priority queue"}
+    medium_priority: int = field(
+        default=2500, metadata={"description": "Size of the medium priority queue"}
     )
     low_priority: int = field(
         default=4000, metadata={"description": "Size of the low priority queue"}
@@ -142,8 +142,8 @@ class PriorityWeights:
     high_priority: int = field(
         default=7, metadata={"description": "Weight for the high priority queue"}
     )
-    normal_priority: int = field(
-        default=5, metadata={"description": "Weight for the normal priority queue"}
+    medium_priority: int = field(
+        default=5, metadata={"description": "Weight for the medium priority queue"}
     )
     low_priority: int = field(
         default=3, metadata={"description": "Weight for the low priority queue"}
@@ -170,9 +170,9 @@ class QueueConfig:
         default="high_priority_ml",
         metadata={"description": "Queue for high priority machine learning tasks"},
     )
-    normal_priority_ml: str = field(
-        default="normal_priority_ml",
-        metadata={"description": "Queue for normal priority machine learning tasks"},
+    medium_priority_ml: str = field(
+        default="medium_priority_ml",
+        metadata={"description": "Queue for medium priority machine learning tasks"},
     )
     low_priority_ml: str = field(
         default="low_priority_ml",

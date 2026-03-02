@@ -21,6 +21,10 @@ class PresignedURLResponse(BaseSchema):
     content_type: MimeTypeEnum | None = Field(
         description="The MIME type of the file to be uploaded."
     )
+    upload_headers: dict[str, str] | None = Field(
+        default=None,
+        description="Headers that must be included when uploading to the presigned URL.",
+    )
 
 
 class TaskStatusResponse(BaseSchema):

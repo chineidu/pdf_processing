@@ -1,10 +1,11 @@
 import hashlib
+import io
 import os
 import re
 from typing import TYPE_CHECKING, Any
 
+import fitz  # PyMuPDF
 import msgspec
-import torch
 
 from src import create_logger
 from src.schemas.types import TierEnum
@@ -134,6 +135,9 @@ def log_system_info() -> None:
     Utility function to log system resource details for debugging and monitoring.
     It captures GPU details (if available), CPU info, memory usage, and container limits.
     """
+    # Rarely called: Importing torch here to avoid unnecessary overhead in non-GPU
+    # contexts
+    import torch
 
     # 1. GPU Logic (Keep your existing CUDA check)
     if torch.cuda.is_available():
@@ -198,3 +202,24 @@ def log_system_info() -> None:
         else f"{host_total_gb:.2f} GB (Host Total)"
     )
     logger.info(f"   System RAM - Available: {host_avail_gb:.2f} GB / {limit_msg}")
+
+
+def get_pdf_page_count_from_bytes(file_data: bytes) -> int | None:
+    """Extract page count from PDF file bytes.
+
+    Parameters
+    ----------
+    file_data : bytes
+        PDF file contents as bytes.
+
+    Returns
+    -------
+    int | None
+        Number of pages or None if unable to determine.
+    """
+    try:
+        pdf = fitz.open(stream=io.BytesIO(file_data), filetype="pdf")
+        return pdf.page_count
+    except Exception as e:
+        logger.warning(f"Failed to extract page count from PDF bytes: {e}")
+        return None

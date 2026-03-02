@@ -37,8 +37,16 @@ class UploadedResult:
         default=None,
         metadata={
             "description": (
-                "ETag of the uploaded file in S3. "
-                "Null if the upload failed or ETag is not available."
+                "ETag of the uploaded file in S3. Null if the upload failed or ETag is not available."
+            )
+        },
+    )
+    page_count: int | None = field(
+        default=None,
+        metadata={
+            "description": (
+                "Number of pages in the PDF file (if applicable). "
+                "Used for queue routing without re-downloading."
             )
         },
     )
@@ -46,8 +54,7 @@ class UploadedResult:
         default=None,
         metadata={
             "description": (
-                "Error message if the file upload or processing failed. "
-                "Null if the operation was successful."
+                "Error message if the file upload or processing failed. Null if the operation was successful."
             )
         },
     )

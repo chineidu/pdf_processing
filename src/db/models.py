@@ -214,6 +214,7 @@ class DBTask(Base):
     status: Mapped[str] = mapped_column(String(50), nullable=False)
 
     # File information
+    file_page_count: Mapped[int] = mapped_column(Integer, nullable=True)
     file_upload_key: Mapped[str] = mapped_column(String(255), nullable=False)
     file_result_key: Mapped[str] = mapped_column(String(255), nullable=True)
     file_size_bytes: Mapped[int] = mapped_column(Integer, nullable=False)

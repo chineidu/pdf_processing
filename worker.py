@@ -73,7 +73,7 @@ def _resolve_environment_variables() -> dict[str, Any]:
     # `QUEUES` should be a comma-separated list if provided, otherwise use configured queues
     default_queues: tuple[str, ...] = (
         app_config.queue_config.low_priority_ml,
-        app_config.queue_config.normal_priority_ml,
+        app_config.queue_config.medium_priority_ml,
         app_config.queue_config.high_priority_ml,
         app_config.queue_config.notifications,
         "celery",

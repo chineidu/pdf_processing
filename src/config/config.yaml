@@ -27,9 +27,9 @@ config:
     expire_on_commit: false # False for async implementations
 
   pdf_processing_config:
-    max_num_pages: 20
-    max_file_size_bytes: 10485760 # 10*1024*1024 # 10MB
-    perform_ocr: false
+    max_num_pages: 80
+    max_file_size_bytes: 36700160 # 35*1024*1024 # 35MB
+    perform_ocr: true
     use_gpu: true
 
   endpoint_policies_config:
@@ -85,7 +85,7 @@ config:
 
   queue_config:
     high_priority_ml: high_priority_ml # Queue for high priority machine learning tasks
-    normal_priority_ml: normal_priority_ml # Queue for normal priority machine learning tasks
+    medium_priority_ml: medium_priority_ml # Queue for normal priority machine learning tasks
     low_priority_ml: low_priority_ml # Queue for low priority machine learning tasks
     cleanups: periodic # Queue for cleanup tasks
     notifications: user_notifications # Queue for user notifications
@@ -94,13 +94,13 @@ config:
     priority_config:
       sizes:
         # lower is higher priority
-        high_priority: 1600
-        normal_priority: 3200
-        low_priority: 6400
+        high_priority: 10
+        medium_priority: 50
+        low_priority: 200
       weights:
         # higher is higher priority
         high_priority: 9
-        normal_priority: 6
+        medium_priority: 6
         low_priority: 3
 
   celery_config:

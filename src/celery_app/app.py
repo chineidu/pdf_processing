@@ -19,8 +19,8 @@ def create_celery_app() -> Celery:
             routing_key=app_config.queue_config.high_priority_ml,
         ),
         Queue(
-            app_config.queue_config.normal_priority_ml,
-            routing_key=app_config.queue_config.normal_priority_ml,
+            app_config.queue_config.medium_priority_ml,
+            routing_key=app_config.queue_config.medium_priority_ml,
         ),
         Queue(
             app_config.queue_config.low_priority_ml,

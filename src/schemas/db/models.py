@@ -202,6 +202,10 @@ class TaskSchema(BaseSchema):
     )
 
     # File information
+    file_page_count: int | None = Field(
+        default=None,
+        description="Number of pages in the uploaded PDF file (if applicable).",
+    )
     file_upload_key: str = Field(
         description="S3 key of the uploaded file associated with the task."
     )

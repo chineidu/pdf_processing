@@ -75,6 +75,7 @@ async def handle_webhook(
 
     # Parse payload
     payload = json.loads(body)
+    print("📥 Webhook payload:", json.dumps(payload, indent=2))
 
     # Extract webhook data
     task_id = payload.get("task_id")
@@ -89,9 +90,10 @@ async def handle_webhook(
     print(f"Status: {status}")
 
     if status == "completed":
-        result_url = payload.get("result_url")
+        result_url = payload.get("file_result_url")
         completed_at = payload.get("completed_at")
         print("✅ Processing completed!")
+        print(f"Metadata: {payload.get('metadata')}")
         print(f"Results URL: {result_url}")
         print(f"Completed at: {completed_at}")
 

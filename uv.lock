@@ -1924,6 +1924,17 @@ wheels = [
 ]
 
 [[package]]
+name = "pdf-oxide"
+version = "0.3.9"
+source = { registry = "https://pypi.org/simple" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/cc/ec/83706b640e6b1fda4c9fcec05711da06fafd9fa4fcc69f192978fe4f3a89/pdf_oxide-0.3.9-cp38-abi3-macosx_10_12_x86_64.whl", hash = "sha256:93a8bcf426cbc28e55b780c1ad85e67f5ef307add7479913fc663d12f7bc95d5", size = 2870661, upload-time = "2026-02-25T05:51:08.493Z" },
+    { url = "https://files.pythonhosted.org/packages/fc/7a/24417ec7dfe8db974bd7c4d5823106f579ce1925f768cf9a6c16ab4ec780/pdf_oxide-0.3.9-cp38-abi3-macosx_11_0_arm64.whl", hash = "sha256:fb515a9ec6c91e3d622d0d89c9fea760655df6795053fb1a428d19cd348d1225", size = 2705192, upload-time = "2026-02-25T05:51:11.008Z" },
+    { url = "https://files.pythonhosted.org/packages/19/f7/5212c634d568c417fdff4416944292b2163cecce7be3f50c762453bf1277/pdf_oxide-0.3.9-cp38-abi3-manylinux_2_34_x86_64.whl", hash = "sha256:786f189ef26210fdaec1889cff8c5b2ffa43e63852879a3df15db1f38890c692", size = 2947874, upload-time = "2026-02-25T05:51:12.454Z" },
+    { url = "https://files.pythonhosted.org/packages/b6/7b/237106520144ebed27e59d9f9a2c8eea0df872ec3dc71a4141725ca6b171/pdf_oxide-0.3.9-cp38-abi3-win_amd64.whl", hash = "sha256:740e3ef713e6829d9045eb48054118153f8f33f1cb57dd8a03a2d6214001cdb5", size = 2955154, upload-time = "2026-02-25T05:51:13.677Z" },
+]
+
+[[package]]
 name = "pdf-processing"
 version = "0.1.0"
 source = { virtual = "." }
@@ -1948,11 +1959,13 @@ dependencies = [
     { name = "opentelemetry-instrumentation-sqlalchemy" },
     { name = "opentelemetry-sdk" },
     { name = "passlib" },
+    { name = "pdf-oxide" },
     { name = "pendulum" },
     { name = "prometheus-client" },
     { name = "prometheus-fastapi-instrumentator" },
     { name = "psycopg-binary" },
     { name = "pydantic-settings" },
+    { name = "pymupdf" },
     { name = "python-jose" },
     { name = "python-json-logger" },
     { name = "python-magic" },
@@ -1990,11 +2003,13 @@ requires-dist = [
     { name = "opentelemetry-instrumentation-sqlalchemy", specifier = ">=0.60b1" },
     { name = "opentelemetry-sdk", specifier = ">=1.39.1" },
     { name = "passlib", specifier = ">=1.7.4" },
+    { name = "pdf-oxide", specifier = ">=0.3.9" },
     { name = "pendulum", specifier = ">=3.2.0" },
     { name = "prometheus-client", specifier = ">=0.24.1" },
     { name = "prometheus-fastapi-instrumentator", specifier = ">=7.1.0" },
     { name = "psycopg-binary", specifier = ">=3.3.3" },
     { name = "pydantic-settings", specifier = ">=2.13.0" },
+    { name = "pymupdf", specifier = ">=1.27.1" },
     { name = "python-jose", specifier = ">=3.5.0" },
     { name = "python-json-logger", specifier = ">=4.0.0" },
     { name = "python-magic", specifier = ">=0.4.27" },
@@ -2469,6 +2484,21 @@ name = "pylatexenc"
 version = "2.10"
 source = { registry = "https://pypi.org/simple" }
 sdist = { url = "https://files.pythonhosted.org/packages/5d/ab/34ec41718af73c00119d0351b7a2531d2ebddb51833a36448fc7b862be60/pylatexenc-2.10.tar.gz", hash = "sha256:3dd8fd84eb46dc30bee1e23eaab8d8fb5a7f507347b23e5f38ad9675c84f40d3", size = 162597, upload-time = "2021-04-06T07:56:07.854Z" }
+
+[[package]]
+name = "pymupdf"
+version = "1.27.1"
+source = { registry = "https://pypi.org/simple" }
+sdist = { url = "https://files.pythonhosted.org/packages/1b/0c/40dda0cc4bd2220a2ef75f8c53dd7d8ed1e29681fcb3df75db6ee9677a7e/pymupdf-1.27.1.tar.gz", hash = "sha256:4afbde0769c336717a149ab0de3330dcb75378f795c1a8c5af55c1a628b17d55", size = 85303479, upload-time = "2026-02-12T08:29:17.682Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/13/19/fde6ea4712a904b65e8f41124a0e4233879b87a770fe6a8ce857964de6d5/pymupdf-1.27.1-cp310-abi3-macosx_10_9_x86_64.whl", hash = "sha256:bee9f95512f9556dbf2cacfd1413c61b29a55baa07fa7f8fc83d221d8419888a", size = 23986707, upload-time = "2026-02-11T15:03:24.025Z" },
+    { url = "https://files.pythonhosted.org/packages/75/c2/070dff91ad3f1bc16fd6c6ceff23495601fcce4c92d28be534417596418a/pymupdf-1.27.1-cp310-abi3-macosx_11_0_arm64.whl", hash = "sha256:3de95a0889395b0966fafd11b94980b7543a816e89dd1c218597a08543ac3415", size = 23263493, upload-time = "2026-02-11T15:03:45.528Z" },
+    { url = "https://files.pythonhosted.org/packages/8e/db/937377f4b3e0fbf6273c17436a49f7db17df1a46b1be9e26653b6fafc0e1/pymupdf-1.27.1-cp310-abi3-manylinux_2_28_aarch64.whl", hash = "sha256:2c9d9353b840040cbc724341f4095fb7e2cc1a12a9147d0ec1a0a79f5d773147", size = 24317651, upload-time = "2026-02-11T22:33:38.967Z" },
+    { url = "https://files.pythonhosted.org/packages/72/d5/c701cf2d0cdd6e5d6bca3ca9188d7f5d7ce3ae67dd1368d658cd4bae2707/pymupdf-1.27.1-cp310-abi3-manylinux_2_28_x86_64.whl", hash = "sha256:aeaed76e72cbc061149a825ab0811c5f4752970c56591c2938c5042ec06b26e1", size = 24945742, upload-time = "2026-02-11T15:04:06.21Z" },
+    { url = "https://files.pythonhosted.org/packages/2b/29/690202b38b93cf77b73a29c25a63a2b6f3fcb36b1f75006e50b8dee7c108/pymupdf-1.27.1-cp310-abi3-musllinux_1_2_x86_64.whl", hash = "sha256:4f1837554134fb45d390a44de8844b2ca9b6c901c82ccc90b340e3b7f3b126ca", size = 25167965, upload-time = "2026-02-11T22:36:35.478Z" },
+    { url = "https://files.pythonhosted.org/packages/8a/81/f937e6aa606fd263c3a45d0ff0f0bbdbf3fb779933091fc0f6179513cc93/pymupdf-1.27.1-cp310-abi3-win32.whl", hash = "sha256:fa33b512d82c6c4852edadf57f22d5f27d16243bb33dac0fbe4eb0f281c5b17e", size = 18006253, upload-time = "2026-02-12T13:48:07.129Z" },
+    { url = "https://files.pythonhosted.org/packages/3e/99/fe4a7752990bf65277718fffbead4478de9afd1c7288d7a6d643f79a6fa7/pymupdf-1.27.1-cp310-abi3-win_amd64.whl", hash = "sha256:4b6268dff3a9d713034eba5c2ffce0da37c62443578941ac5df433adcde57b2f", size = 19236703, upload-time = "2026-02-11T15:04:19.607Z" },
+]
 
 [[package]]
 name = "pyobjc-core"

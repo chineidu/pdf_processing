@@ -44,6 +44,36 @@ class TaskRepository:
             logger.error(f"Error fetching task with ID {task_id}: {e}")
             return None
 
+    async def aget_tasks_by_etag(
+        self, etag: str, status: StatusTypeEnum
+    ) -> DBTask | None:
+        """Fetch all tasks by their file ETag, optionally filtered by status.
+
+        Parameters
+        ----------
+        etag : str
+            The ETag to search for.
+        status : StatusTypeEnum
+            The status to filter by (e.g. COMPLETED). Only tasks with this status will be returned.
+
+        Returns
+        -------
+        DBTask | None
+            The first matching task object if found, or None if no matches are found or an error occurs.
+        """
+        try:
+            stmt = (
+                select(DBTask)
+                .where(DBTask.etag == etag, DBTask.status == status.value)
+                .options(selectinload(DBTask.user))
+                .order_by(DBTask.created_at)
+                .limit(1)
+            )
+            return await self.db.scalar(stmt)
+        except Exception as e:
+            logger.error(f"Error fetching first completed task with ETag {etag}: {e}")
+            return None
+
     async def aget_tasks_by_status(self, status: StatusTypeEnum) -> list[DBTask]:
         """Fetch all tasks with a specific status."""
         try:
@@ -130,6 +160,7 @@ class TaskRepository:
         update_data : dict[str, Any]
             Dictionary containing the fields to update. Expected keys include:
             - 'status' (StatusTypeEnum): New status of the task.
+            - file_page_count (int, optional): Number of pages in the uploaded PDF file (if applicable).
             - 'file_result_key' (str, optional): S3 key of the processed result file.
             - 'file_size_bytes' (int, optional): Size of the uploaded file in bytes.
             - 'file_type' (MimeTypeEnum, optional): MIME type of the uploaded file
@@ -162,6 +193,7 @@ class TaskRepository:
         # Update the data
         ALLOWED_FIELDS = {
             "status",
+            "file_page_count",
             "file_result_key",
             "file_size_bytes",
             "file_type",

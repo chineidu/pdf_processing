@@ -12,7 +12,6 @@ from botocore.exceptions import BotoCoreError, ClientError
 from src import create_logger
 from src.config import app_config, app_settings
 from src.schemas.services.storage import (
-    S3StorageUploadResult,
     S3UploadMetadata,
     UploadResultExtraArgs,
 )
@@ -39,7 +38,7 @@ def _upload_to_s3(
             ExtraArgs=extra_args.model_dump(),
         )
         # Retrieve object metedata to capture the ETag (content hash) and confirm upload
-        response = client.head_object(Bucket=bucket_name, Key=object_name)
+        response = _get_metadata(client, bucket_name, object_name)
         # ETags are usually enclosed in quotes, so we strip them for consistency
         return response.get("ETag", "").strip('"')
 
@@ -75,7 +74,7 @@ def _upload_fileobj_to_s3(
             ExtraArgs=extra_args.model_dump(),
         )
 
-        response = client.head_object(Bucket=bucket_name, Key=object_name)
+        response = _get_metadata(client, bucket_name, object_name)
         return response.get("ETag", "").strip('"')
 
     except ClientError as e:
@@ -150,12 +149,15 @@ def _generate_presigned_url(
     object_name: str,
     expiration: int = 3600,
     content_type: str | None = None,
+    metadata: dict[str, str] | None = None,
 ) -> dict[str, str]:
     """Generate a presigned URL for the given S3 object."""
     try:
-        params: dict[str, str] = {"Bucket": bucket_name, "Key": object_name}
+        params: dict[str, Any] = {"Bucket": bucket_name, "Key": object_name}
         if content_type:
             params["ContentType"] = content_type
+        if metadata:
+            params["Metadata"] = metadata
         url = client.generate_presigned_url(
             "put_object",
             Params=params,
@@ -171,6 +173,11 @@ def _generate_presigned_url(
     except Exception as e:
         logger.error(f"Unexpected error generating presigned URL: {e}")
         raise
+
+
+def _get_metadata(client: Any, bucket_name: str, object_name: str) -> dict[str, Any]:
+    """Helper function to get metadata from S3."""
+    return client.head_object(Bucket=bucket_name, Key=object_name)
 
 
 # ---- S3 Storage Service and Policy Classes ----
@@ -535,6 +542,7 @@ class S3StorageService:
         operation: str = "input",
         expiration: int = 3600,
         content_type: str | None = None,
+        metadata: dict[str, str] | None = None,
     ) -> dict[str, str]:
         """Asynchronously get a presigned URL for the given task ID.
 
@@ -550,6 +558,8 @@ class S3StorageService:
             URL expiration time in seconds, by default 3600
         content_type : str, optional
             MIME type for the object, by default None
+        metadata : dict[str, str] | None, optional
+            S3 object metadata to sign with the upload, by default None
         """
         object_name = self.get_object_name(task_id, file_extension, operation)
         return await asyncio.to_thread(
@@ -559,7 +569,43 @@ class S3StorageService:
             object_name,
             expiration,
             content_type,
+            metadata,
         )
+
+    async def aget_object_metadata(
+        self,
+        *,
+        task_id: str,
+        file_extension: str,
+        operation: str = "input",
+    ) -> dict[str, str]:
+        """Get object metadata without downloading the file.
+
+        Returns
+        -------
+        dict[str, str]
+            Metadata keys and values. Returns empty dict if not found.
+        """
+        object_name = self.get_object_name(task_id, file_extension, operation)
+        try:
+            response = await asyncio.to_thread(
+                _get_metadata,
+                self.s3_client,
+                self.bucket_name,
+                object_name,
+            )
+        except ClientError as e:
+            error_code = e.response.get("Error", {}).get("Code")
+            if error_code == "404":
+                logger.warning(
+                    f"[x] Object not found for metadata lookup: bucket={self.bucket_name}, key={object_name}"
+                )
+                return {}
+            logger.error(
+                f"[x] S3 error reading metadata: bucket={self.bucket_name}, key={object_name}, error={e}"
+            )
+            return {}
+        return response.get("Metadata", {}) or {}
 
     async def _aupload_to_s3(
         self,
@@ -589,105 +635,4 @@ class S3StorageService:
             filepath,
             self.bucket_name,
             object_name,
-        )
-
-
-# --- S3 File Upload Policy Class with Retry Logic ---
-class S3StorageFileUploadPolicy:
-    """Policy class for handling S3 file uploads."""
-
-    def __init__(
-        self,
-        storage_service: S3StorageService,
-        max_attempts: int = 3,
-        base_delay: float = 1.0,
-        raise_on_failure: bool = False,
-    ) -> None:
-        """Initialize the S3FileUploadPolicy.
-
-        Parameters
-        ----------
-        storage_service : S3StorageService
-            The S3 storage service instance.
-        max_attempts : int, optional
-            Maximum number of upload attempts, by default 3
-        base_delay : float, optional
-            Base delay in seconds for exponential backoff, by default 1.0
-        raise_on_failure : bool, optional
-            Whether to raise an exception on final failure, by default False
-        """
-        self.storage_service = storage_service
-        self.max_attempts = max_attempts
-        self.base_delay = base_delay
-        self.raise_on_failure = raise_on_failure
-
-    async def aupload_with_retry(
-        self,
-        filepath: str | Path,
-        task_id: str,
-        correlation_id: str,
-        max_allowed_size_bytes: int = MAX_FILE_SIZE_BYTES,
-    ) -> S3StorageUploadResult:
-        """Upload a file to S3 with retry logic.
-
-        Parameters
-        ----------
-        filepath : str | Path
-            Path to the file to upload.
-        task_id : str
-            Unique task identifier.
-        correlation_id : str
-            Correlation ID for tracing.
-        max_allowed_size_bytes : int, optional
-            Maximum allowed file size in bytes, by default
-            app_config.pdf_processing_config.max_file_size_bytes
-
-        Returns
-        -------
-        S3StorageUploadResult
-            Result of the upload attempt, including success status and any error messages.
-        """
-        last_exception: Exception | None = None
-
-        for attempt in range(1, self.max_attempts + 1):
-            try:
-                success = await self.storage_service.aupload_file_to_s3(
-                    filepath=filepath,
-                    task_id=task_id,
-                    correlation_id=correlation_id,
-                    max_allowed_size_bytes=max_allowed_size_bytes,
-                )
-                if success:
-                    file_ext = Path(filepath).suffix
-                    return S3StorageUploadResult(
-                        attempts=attempt,
-                        s3_key=self.storage_service.get_object_name(task_id, file_ext),
-                        s3_url=self.storage_service.get_s3_object_url(
-                            task_id, file_ext
-                        ),
-                    )
-            except Exception as e:
-                last_exception = e
-
-            if attempt < self.max_attempts:
-                delay: float = self.base_delay * attempt
-                logger.warning(
-                    f"[-] Upload attempt {attempt} for task_id={task_id} failed: {last_exception}. "
-                    f"Retrying in {delay} seconds..."
-                )
-                await asyncio.sleep(delay)
-
-        # All attempts failed
-        error_message = (
-            f"All {self.max_attempts} upload attempts failed for task_id={task_id}. "
-            f"Last error: {last_exception}"
-        )
-        logger.error(error_message)
-
-        if self.raise_on_failure and last_exception is not None:
-            raise last_exception
-
-        return S3StorageUploadResult(
-            attempts=self.max_attempts,
-            error=error_message,
         )
