@@ -3,7 +3,7 @@
 from contextlib import asynccontextmanager
 from datetime import datetime
 from decimal import Decimal
-from typing import AsyncGenerator
+from typing import Any, AsyncGenerator
 
 from sqlalchemy import (
     JSON,
@@ -220,6 +220,11 @@ class DBTask(Base):
     file_size_bytes: Mapped[int] = mapped_column(Integer, nullable=False)
     file_type: Mapped[str] = mapped_column(String(50), nullable=False)
     etag: Mapped[str] = mapped_column(String(255), nullable=True)
+
+    # Metadata (Attribute name 'metadata' is reserved by SQLAlchemy)
+    _metadata: Mapped[dict[str, Any]] = mapped_column(
+        JSON, name="metadata", nullable=True
+    )
 
     # Error
     error_message: Mapped[str] = mapped_column(Text, nullable=True)

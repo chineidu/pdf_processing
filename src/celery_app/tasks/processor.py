@@ -11,15 +11,16 @@ from src.celery_app.event_loop import _get_worker_event_loop
 from src.config import app_config
 from src.db.models import aget_db_session
 from src.db.repositories.task_repository import TaskRepository
-from src.schemas.db.models import TaskSchema
+from src.schemas.db.models import MetadataResult, TaskSchema
 from src.schemas.tasks.processor import ProcessDataTaskResult
 from src.schemas.types import ExportFormat, StatusTypeEnum
-from src.utilities.utils import MSGSPEC_DECODER, MSGSPEC_ENCODER
+from src.utilities.utils import MSGSPEC_ENCODER
 
 logger = create_logger(name=__name__)
 logger.propagate = False  # This prevents double logging to the root logger
 
 MAX_PAGES: int = app_config.pdf_processing_config.max_num_pages
+MAX_SIZE_BYTES: int = app_config.pdf_processing_config.max_file_size_bytes
 
 
 # -------------------------------------------------------------------
@@ -89,9 +90,7 @@ async def afetch_task(etag: str) -> TaskSchema | None:
     async with aget_db_session() as session:
         task_repo = TaskRepository(db=session)
         # Get all completed tasks with this etag
-        tasks = await task_repo.aget_tasks_by_etag(
-            etag=etag, status=StatusTypeEnum.COMPLETED
-        )
+        tasks = await task_repo.aget_tasks_by_etag(etag=etag)
 
         # Return the first completed task if any exist
         if tasks:
@@ -106,7 +105,7 @@ async def asend_success_notification(
     uploaded_files: dict[str, str],
     webhook_url: str | None,
     webhook_service: Any,
-    metadata: dict[str, Any] | None = None,
+    metadata: MetadataResult | None = None,
     retries: int | None = None,  # noqa: ARG001 Added for signature consistency with failure notification
 ) -> dict[str, Any]:
     """Send webhook on task completion."""
@@ -137,11 +136,12 @@ async def asend_success_notification(
 
 
 async def asend_failure_notification(
+    etag: str,
     task_id: str,
     webhook_url: str | None,
     error: Exception,
     webhook_service: Any,
-    metadata: dict[str, Any] | None = None,
+    metadata: MetadataResult | None = None,
     retries: int | None = None,
 ) -> None:
     """Update DB and send failure webhook on terminal failure."""
@@ -152,6 +152,7 @@ async def asend_failure_notification(
         "status": StatusTypeEnum.FAILED.value,
         "metadata": metadata,
         "completed_at": completed_at,
+        "etag": etag,
         "error": str(error),
         "retries": retries,
         "event_id": f"{task_id}:{completed_at}",
@@ -168,13 +169,13 @@ async def asend_failure_notification(
         await aupdate_webhook_delivered_at(task_id)
 
 
-async def acheck_page_count(
+async def avalidation_checks(
     etag: str,
     task_id: str,
-    metadata: dict[str, Any] | None,
+    metadata: MetadataResult | None,
     webhook_service: Any,
     max_pages: int,
-) -> dict[str, Any]:
+) -> dict[str, Any] | None:
     """Check if page count exceeds maximum allowed pages and handle accordingly.
 
     Parameters
@@ -183,7 +184,7 @@ async def acheck_page_count(
         Entity tag for the task.
     task_id : str
         Task identifier.
-    metadata : dict[str, Any] | None
+    metadata : MetadataResult | None
         Metadata containing page count information.
     webhook_service : Any
         Service for sending webhooks.
@@ -192,47 +193,58 @@ async def acheck_page_count(
 
     Returns
     -------
-    dict[str, Any]
-        Result dictionary with uploaded_files and completed_at timestamp.
+    dict[str, Any] | None
+        Result dictionary with uploaded_files and completed_at timestamp, or
+        None if page count is within limits.
     """
-    result: dict[str, Any] = {}
 
     if metadata is None:
-        return result
+        return None
 
     try:
-        page_count: int = int(metadata["page_count"])
-        if page_count > max_pages:
+        page_count_value = metadata["page_count"]
+        file_size_bytes = metadata["file_size_bytes"]
+
+        if page_count_value is None or file_size_bytes is None:
+            return None
+        page_count: int = int(page_count_value)
+        file_size: int = int(file_size_bytes)
+
+        if page_count > max_pages or file_size > MAX_SIZE_BYTES:
             logger.warning(
                 f"Task {task_id} has page count {page_count} which exceeds the maximum of "
-                f"{max_pages}. Marking as failed without processing."
+                f"{max_pages} OR file size {file_size:,} which exceeds the maximum of "
+                f"{MAX_SIZE_BYTES:,} bytes. Marking as completed without processing."
             )
 
             # Update task metadata in database
             webhook_url = await aupdate_task_metadata(
                 task_id, {}, StatusTypeEnum.COMPLETED
             )
-            result = await asend_success_notification(
+            return await asend_success_notification(
                 etag=etag,
                 task_id=task_id,
                 uploaded_files={},
                 webhook_url=webhook_url,
                 webhook_service=webhook_service,
-                metadata=metadata,
+                metadata=MetadataResult(**metadata),
             )
-        else:
-            result = {
-                "uploaded_files": {},
-                "completed_at": pendulum.now("UTC").isoformat(),
-            }
 
-    except ValueError:
-        logger.warning(
-            f"Invalid page count in metadata for task_id {task_id}: {metadata.get('page_count')}"
+        # Else:
+        # Page count is within limits - continue processing
+        logger.info(
+            f"Task {task_id} has {page_count} pages (within limit of {max_pages}) "
+            f"OR file size {file_size:,} bytes (within limit of {MAX_SIZE_BYTES:,} bytes). "
+            "Continuing with processing."
         )
-        result = {"uploaded_files": {}, "completed_at": pendulum.now("UTC").isoformat()}
+        return None
 
-    return result
+    except (ValueError, KeyError) as e:
+        logger.warning(
+            f"Invalid page count in metadata for task_id {task_id}: {metadata.get('page_count')}. Error: {e}"
+        )
+        # Continue processing despite invalid metadata
+        return None
 
 
 # -------------------------------------------------------------------
@@ -245,7 +257,7 @@ def process_data(
     self,  # noqa: ANN001
     etag: str,
     task_id: str,
-    metadata: dict[str, Any] | None = None,
+    metadata: MetadataResult | None = None,
 ) -> ProcessDataTaskResult:
     """Celery task to process data"""
 
@@ -256,7 +268,6 @@ def process_data(
     logger.info(f"Started processing task_id: {task_id} with etag: {etag}")
 
     # Mark task as PROCESSING immediately so idempotency TTL kicks in correctly
-    # and we can distinguish "queued" (validating) from "actively running" (processing)
     loop = _get_worker_event_loop()
     loop.run_until_complete(
         aupdate_task_status(task_id=task_id, status=StatusTypeEnum.PROCESSING)
@@ -264,36 +275,50 @@ def process_data(
 
     try:
         # Check the page count from metadata if available
-        if metadata and "page_count" in metadata:
-            metadata["reason"] = "exceeds_page_limit"
-            metadata["page_count"] = (
-                metadata["page_count"]
-                if isinstance(metadata["page_count"], str)
-                else str(metadata["page_count"])
+        if metadata and metadata["page_count"] is not None:
+            metadata_copy = metadata.copy()
+
+            # Add metadata
+            page_count_value = metadata_copy["page_count"]
+            if isinstance(page_count_value, str):
+                page_count_int = int(page_count_value)
+            elif isinstance(page_count_value, int):
+                page_count_int = page_count_value
+            metadata_copy["page_count"] = page_count_int
+            file_size_value = metadata_copy["file_size_bytes"]
+            file_size_int = int(file_size_value) if file_size_value is not None else 0
+            metadata_copy["file_size_bytes"] = file_size_int
+            # If page count exceeds limit or file size exceeds limit
+            metadata_copy["reason"] = (
+                "exceeds_page_limit"
+                if page_count_int > MAX_PAGES
+                else "exceeds_size_limit"
             )
+
             loop = _get_worker_event_loop()
-            result = loop.run_until_complete(
-                acheck_page_count(
+            early_termination_result = loop.run_until_complete(
+                avalidation_checks(
                     etag=etag,
                     task_id=task_id,
-                    metadata=metadata,
+                    metadata=metadata_copy,
                     webhook_service=self.webhook_service,
                     max_pages=MAX_PAGES,
                 )
             )
-            uploaded_files = result.get("uploaded_files", {})
-            completed_at = result.get("completed_at", pendulum.now("UTC").isoformat())
-            success = True
+            # Page count exceeds limit
+            if early_termination_result:
+                uploaded_files = early_termination_result.get("uploaded_files", {})
+                completed_at = early_termination_result.get(
+                    "completed_at", pendulum.now("UTC").isoformat()
+                )
 
-            return ProcessDataTaskResult(
-                status=StatusTypeEnum.COMPLETED.value
-                if success
-                else StatusTypeEnum.FAILED.value,
-                success=success,
-                task_id=task_id,
-                completed_at=completed_at,
-                file_result_url=uploaded_files,
-            )
+                return ProcessDataTaskResult(
+                    status=StatusTypeEnum.COMPLETED.value,
+                    success=True,
+                    task_id=task_id,
+                    completed_at=completed_at,
+                    file_result_url=uploaded_files,
+                )
 
         # Else: If no page count metadata, proceed with processing but log a warning
         logger.info(
@@ -301,6 +326,7 @@ def process_data(
             "page count check."
         )
 
+        # ------ Normal processing workflow (download, process, upload) ------
         with tempfile.TemporaryDirectory() as tmp_dir:
             tmp_path = Path(tmp_dir)
             uploads_dir = tmp_path / "uploads"
@@ -310,7 +336,7 @@ def process_data(
             # Run all async operations in the same event loop
             async def aprocess_and_update() -> dict[str, Any]:
                 """Combined async workflow: download, process, and update database."""
-                # Download the file from S3
+
                 await s3_service.adownload_file_from_s3(
                     filepath=filepath,
                     task_id=task_id,
@@ -332,7 +358,7 @@ def process_data(
                 webhook_url = await aupdate_task_metadata(
                     task_id, uploaded_files, StatusTypeEnum.COMPLETED
                 )
-                task_metadata = metadata if metadata is not None else {}
+                task_metadata = metadata.copy() if metadata is not None else {}
                 task_metadata["reason"] = "processed"
 
                 return await asend_success_notification(
@@ -341,19 +367,16 @@ def process_data(
                     uploaded_files=uploaded_files,
                     webhook_url=webhook_url,
                     webhook_service=self.webhook_service,
-                    metadata=task_metadata,
+                    metadata=MetadataResult(**task_metadata),
                 )
 
             # Get the stable worker event loop
             loop = _get_worker_event_loop()
             result: dict[str, Any] = loop.run_until_complete(aprocess_and_update())
 
-        success = True
         return ProcessDataTaskResult(
-            status=StatusTypeEnum.COMPLETED.value
-            if success
-            else StatusTypeEnum.FAILED.value,
-            success=success,
+            status=StatusTypeEnum.COMPLETED.value,
+            success=True,
             task_id=task_id,
             completed_at=result["completed_at"],
             file_result_url=result["uploaded_files"],
@@ -377,158 +400,7 @@ def process_data(
                     task_id, uploaded_files={}, status=StatusTypeEnum.FAILED
                 )
                 await asend_failure_notification(
-                    task_id=task_id,
-                    webhook_url=webhook_url,
-                    error=error,
-                    webhook_service=self.webhook_service,
-                    retries=self.request.retries,
-                )
-                return
-
-            loop = _get_worker_event_loop()
-            loop.run_until_complete(aprocess_failure(exc))
-
-        raise self.retry(exc=exc) from exc
-
-
-@shared_task(bind=True, base=CustomTask)
-def fetch_processed_data(
-    self,  # noqa: ANN001
-    etag: str,
-    task_id: str,
-    metadata: dict[str, Any] | None = None,
-) -> ProcessDataTaskResult:
-    """Celery task to fetch already processed data from S3 without re-processing."""
-
-    logger.info(
-        f"Started fetching processed data for task_id: {task_id} with etag: {etag}"
-    )
-
-    try:
-        uploaded_files: dict[str, Any] = {}
-        # Check the page count from metadata if available
-        if metadata and "page_count" in metadata:
-            loop = _get_worker_event_loop()
-            result = loop.run_until_complete(
-                acheck_page_count(
                     etag=etag,
-                    task_id=task_id,
-                    metadata=metadata,
-                    webhook_service=self.webhook_service,
-                    max_pages=MAX_PAGES,
-                )
-            )
-            uploaded_files = result.get("uploaded_files", {})
-            completed_at = result.get("completed_at", pendulum.now("UTC").isoformat())
-            success = True
-
-            return ProcessDataTaskResult(
-                status=StatusTypeEnum.COMPLETED.value
-                if success
-                else StatusTypeEnum.FAILED.value,
-                success=success,
-                task_id=task_id,
-                completed_at=completed_at,
-                file_result_url=uploaded_files,
-            )
-
-        # Else: If no page count metadata, proceed with processing but log a warning
-        logger.info(
-            f"No page count metadata for task_id {task_id}. Proceeding with processing without "
-            "page count check."
-        )
-
-        async def afetch_and_update() -> dict[str, Any]:
-            """Combined async workflow: fetch results and update database."""
-            # Fetch the processed result
-            task = await afetch_task(etag=etag)
-
-            if not task:
-                raise ValueError(f"No task found with ETag {etag}")
-            # Update task metadata in database with the fetched result URLs
-            # Parse the JSON-encoded file_result_key back into a dictionary
-            uploaded_files: dict[str, Any] = (
-                MSGSPEC_DECODER.decode(task.file_result_key)
-                if task.file_result_key
-                else {}
-            )
-            webhook_url = await aupdate_task_metadata(
-                task_id, uploaded_files, StatusTypeEnum.COMPLETED
-            )
-            result = await asend_success_notification(
-                etag=etag,
-                task_id=task_id,
-                uploaded_files=uploaded_files,
-                webhook_url=webhook_url,
-                webhook_service=self.webhook_service,
-                metadata=metadata,
-            )
-
-            return {
-                "uploaded_files": result.get("uploaded_files", {}),
-                "completed_at": result.get(
-                    "completed_at", pendulum.now("UTC").isoformat()
-                ),
-            }
-
-        # Get the stable worker event loop
-        loop = _get_worker_event_loop()
-        result: dict[str, Any] = loop.run_until_complete(afetch_and_update())
-
-        success = True
-        return ProcessDataTaskResult(
-            status=StatusTypeEnum.COMPLETED.value
-            if success
-            else StatusTypeEnum.FAILED.value,
-            success=success,
-            task_id=task_id,
-            completed_at=result["completed_at"],
-            file_result_url=result["uploaded_files"],
-        )
-
-    except Exception as exc:
-        # This is expected when a duplicate arrives while the original task is still
-        # VALIDATING/PROCESSING and no COMPLETED task exists yet for this ETag.
-        # Treat it as non-retriable to avoid noisy retry loops and noisy tracebacks.
-        if isinstance(exc, ValueError) and "No task found with ETag" in str(exc):
-            logger.warning(
-                f"No completed task found for duplicate task_id {task_id} and etag {etag}. "
-                "Marking task as skipped without retry."
-            )
-
-            loop = _get_worker_event_loop()
-            loop.run_until_complete(
-                aupdate_task_status(task_id, StatusTypeEnum.SKIPPED)
-            )
-
-            return ProcessDataTaskResult(
-                status=StatusTypeEnum.SKIPPED.value,
-                success=False,
-                task_id=task_id,
-                completed_at=pendulum.now("UTC").isoformat(),
-                file_result_url={},
-                error=str(exc),
-            )
-
-        logger.error(
-            f"Error fetching processed data for task_id {task_id}: {exc}", exc_info=True
-        )
-
-        # Check if we've exhausted all retries (terminal failure)
-        is_final_failure = self.request.retries >= self.max_retries
-
-        if is_final_failure:
-            # Terminal failure - send webhook and update database before giving up
-            logger.error(
-                f"Terminal failure for task {task_id} after {self.max_retries} retries"
-            )
-
-            async def aprocess_failure(error: Exception) -> None:
-                """Async workflow to update DB and send failure notification on terminal failure."""
-                webhook_url = await aupdate_task_metadata(
-                    task_id, uploaded_files={}, status=StatusTypeEnum.FAILED
-                )
-                await asend_failure_notification(
                     task_id=task_id,
                     webhook_url=webhook_url,
                     error=error,

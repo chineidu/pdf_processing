@@ -27,10 +27,15 @@ config:
     expire_on_commit: false # False for async implementations
 
   pdf_processing_config:
-    max_num_pages: 80
+    max_num_pages: 550
     max_file_size_bytes: 36700160 # 35*1024*1024 # 35MB
     perform_ocr: true
     use_gpu: true
+    # Idempotency/deduplication windows
+    # For development/staging: Set to 0 days and 5 minutes to allow quick re-testing
+    # For production: Use 10 days and 60 minutes for true deduplication
+    completed_dedupe_window_days: 0 # 0 = allow reprocessing COMPLETED tasks immediately (dev/staging)
+    in_flight_dedupe_window_minutes: 5 # 5 min = allow recovery from stuck tasks quickly (dev/staging)
 
   endpoint_policies_config:
     ratelimits:

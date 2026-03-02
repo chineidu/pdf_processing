@@ -98,6 +98,23 @@ class PDFProcessingConfig:
     use_gpu: bool = field(
         default=True, metadata={"description": "Whether to use GPU for OCR processing."}
     )
+    completed_dedupe_window_days: int = field(
+        default=10,
+        metadata={
+            "description": (
+                "COMPLETED tasks block reprocessing for this many days (production: 10, dev: 0 to disable)"
+            )
+        },
+    )
+    in_flight_dedupe_window_minutes: int = field(
+        default=60,
+        metadata={
+            "description": (
+                "UPLOADED/VALIDATING/PROCESSING tasks block for this many minutes "
+                "(production: 60, dev: 5 for quick recovery)"
+            )
+        },
+    )
 
 
 @dataclass(slots=True, kw_only=True)

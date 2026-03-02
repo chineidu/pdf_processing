@@ -4,7 +4,7 @@ Crud operations for the task repository.
 (Using SQLAlchemy ORM v2.x)
 """
 
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Any
 
 from dateutil.parser import parse  # Very fast, handles ISO formats well
@@ -18,7 +18,7 @@ from sqlalchemy.orm import selectinload
 from src import create_logger
 from src.db.models import DBTask
 from src.schemas.db.models import TaskSchema
-from src.schemas.types import StatusTypeEnum
+from src.schemas.types import IDEMPOTENCY_ACTIVE_STATUSES, StatusTypeEnum
 
 logger = create_logger(__name__)
 
@@ -44,32 +44,34 @@ class TaskRepository:
             logger.error(f"Error fetching task with ID {task_id}: {e}")
             return None
 
-    async def aget_tasks_by_etag(
-        self, etag: str, status: StatusTypeEnum
-    ) -> DBTask | None:
+    async def aget_tasks_by_etag(self, etag: str) -> DBTask | None:
         """Fetch all tasks by their file ETag, optionally filtered by status.
 
         Parameters
         ----------
         etag : str
             The ETag to search for.
-        status : StatusTypeEnum
-            The status to filter by (e.g. COMPLETED). Only tasks with this status will be returned.
-
         Returns
         -------
         DBTask | None
             The first matching task object if found, or None if no matches are found or an error occurs.
         """
         try:
+            cutoff = datetime.now(timezone.utc) - timedelta(days=10)
             stmt = (
                 select(DBTask)
-                .where(DBTask.etag == etag, DBTask.status == status.value)
-                .options(selectinload(DBTask.user))
-                .order_by(DBTask.created_at)
+                .where(
+                    DBTask.etag == etag,
+                    DBTask.status.in_(IDEMPOTENCY_ACTIVE_STATUSES),
+                    DBTask.created_at >= cutoff,
+                )
+                .order_by(
+                    DBTask.created_at.desc()
+                )  # Get the most recent task with this etag
                 .limit(1)
             )
-            return await self.db.scalar(stmt)
+            result = await self.db.execute(stmt)
+            return result.scalar_one_or_none()
         except Exception as e:
             logger.error(f"Error fetching first completed task with ETag {etag}: {e}")
             return None
@@ -165,6 +167,7 @@ class TaskRepository:
             - 'file_size_bytes' (int, optional): Size of the uploaded file in bytes.
             - 'file_type' (MimeTypeEnum, optional): MIME type of the uploaded file
             - 'etag' (str, optional): ETag of the uploaded file in S3.
+            - '_metadata' (dict, optional): Additional metadata related to the task or file.
             - 'error_message' (str, optional): Error message if the task failed.
             - 'webhook_delivered_at' (datetime, optional): Timestamp for webhook delivery.
         add_completed_at : bool, optional
@@ -198,6 +201,7 @@ class TaskRepository:
             "file_size_bytes",
             "file_type",
             "etag",
+            "_metadata",
             "error_message",
             "webhook_delivered_at",
         }
@@ -224,6 +228,8 @@ class TaskRepository:
             if status_value in {
                 StatusTypeEnum.COMPLETED.value,
                 StatusTypeEnum.FAILED.value,
+                StatusTypeEnum.SKIPPED.value,
+                StatusTypeEnum.UNPROCESSABLE.value,
             }:
                 db_task.completed_at = datetime.now(timezone.utc)
                 has_changes = True

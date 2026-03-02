@@ -2,6 +2,7 @@ import hashlib
 import io
 import os
 import re
+from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 import fitz  # PyMuPDF
@@ -223,3 +224,47 @@ def get_pdf_page_count_from_bytes(file_data: bytes) -> int | None:
     except Exception as e:
         logger.warning(f"Failed to extract page count from PDF bytes: {e}")
         return None
+
+
+def validate_pdf_file(filepath: str | Path) -> None:
+    """Validate that the PDF file exists and is readable.
+
+    Parameters
+    ----------
+    filepath : str | Path
+        Path to the PDF file to validate.
+
+    Raises
+    ------
+    FileNotFoundError
+        If the file doesn't exist.
+    ValueError
+        If the file is empty, too small, or doesn't appear to be a valid PDF.
+    """
+    MIN_SIZE_BYTES = 100  # Minimum size for a valid PDF file (in bytes)
+    path = Path(filepath) if isinstance(filepath, str) else filepath
+
+    # Check if file exists
+    if not path.exists():
+        raise FileNotFoundError(f"PDF file not found: {filepath}")
+
+    # Check file size
+    file_size = path.stat().st_size
+    if file_size == 0:
+        raise ValueError(f"PDF file is empty (0 bytes): {filepath}")
+
+    if file_size < MIN_SIZE_BYTES:  # PDFs should be at least MIN_SIZE_BYTES bytes
+        raise ValueError(
+            f"PDF file is too small ({file_size} bytes), likely corrupted: {filepath}"
+        )
+
+    # Check PDF header (should start with %PDF)
+    try:
+        with open(path, "rb") as f:
+            header = f.read(5)
+            if not header.startswith(b"%PDF-"):
+                raise ValueError(
+                    f"File does not appear to be a valid PDF (missing PDF header): {filepath}"
+                )
+    except Exception as e:
+        raise ValueError(f"Cannot read PDF file {filepath}: {e}") from e

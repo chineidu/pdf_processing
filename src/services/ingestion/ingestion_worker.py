@@ -5,16 +5,17 @@ import signal
 import sys
 from datetime import datetime, timedelta, timezone
 from pathlib import PurePosixPath
-from typing import TYPE_CHECKING, Any, Awaitable, Callable
+from typing import TYPE_CHECKING, Any, Awaitable, Callable, TypeAlias
 from urllib.parse import unquote
 
-from sqlalchemy import and_, or_, select
+from sqlalchemy import select
 
 from src import create_logger
 from src.celery_app.app import celery_app
 from src.config import app_config, app_settings
 from src.db.models import DBTask, aget_db_session
 from src.db.repositories.task_repository import TaskRepository
+from src.schemas.db.models import MetadataResult
 from src.schemas.services.ingestion_worker import QueueArguments, StorageEventPayload
 from src.schemas.types import IDEMPOTENCY_ACTIVE_STATUSES, StatusTypeEnum
 from src.services.ingestion.base import BaseRabbitMQ
@@ -23,6 +24,9 @@ from src.services.ingestion.utilities import (
     map_priority_enum_to_int,
 )
 from src.services.storage import S3StorageService
+from src.services.webhook import WebhookService
+
+webhook_service = WebhookService()
 
 if TYPE_CHECKING:
     from src.config.config import AppConfig
@@ -31,15 +35,11 @@ logger = create_logger(name=__name__)
 
 # ----- Configuration -----
 STORAGE_RMQ_URL: str = app_settings.rabbitmq_storage_url
+DEFAULT_NUM_PAGES: int = 50  # Default page count if metadata is missing
 
-# Dedupe windows:
-# - Completed tasks are treated as duplicates for 10 days.
-# - In-flight tasks are treated as duplicates only if recently updated.
-#   This allows stale/stuck tasks to be retried by new uploads.
-COMPLETED_DEDUPE_WINDOW_DAYS = 10
-IN_FLIGHT_DEDUPE_WINDOW_MINUTES = 60
-
-CallbackType = Callable[[StorageEventPayload, dict[str, Any]], Awaitable[None]]
+CallbackType: TypeAlias = Callable[
+    [StorageEventPayload, dict[str, Any]], Awaitable[None]
+]
 
 
 def _extract_task_id_from_storage_key(storage_key: str) -> str | None:
@@ -57,77 +57,30 @@ def _extract_task_id_from_storage_key(storage_key: str) -> str | None:
     return task_id or None
 
 
-async def check_idempotency(etag: str) -> bool:
-    """Queries the database using the indexed etag. Returns True if the file is already
-    being processed or has been completed (to prevent duplicate processing).
-
-    Tasks in IDEMPOTENCY_ACTIVE_STATUSES are considered duplicates:
-    - VALIDATING/PROCESSING: returns True (don't start duplicate processing)
-    - COMPLETED: returns True for 10 days (don't reprocess already completed files)
-    - Other statuses (PENDING, FAILED, SKIPPED): returns False (allow reprocessing)
-    """
+async def acheck_idempotency(etag: str) -> DBTask | None:
+    """Check if a task with the same etag is already being processed or has been completed."""
     async with aget_db_session() as session:
-        now = datetime.now(timezone.utc)
-        # Check for any active task (VALIDATING, PROCESSING, or COMPLETED) as true duplicates
+        cutoff = datetime.now(timezone.utc) - timedelta(days=10)
         stmt = (
-            select(DBTask.id)
+            select(DBTask)
             .where(
                 DBTask.etag == etag,
                 DBTask.status.in_(IDEMPOTENCY_ACTIVE_STATUSES),
-                DBTask.created_at >= now - timedelta(days=10),
+                DBTask.created_at >= cutoff,
             )
+            .order_by(
+                DBTask.created_at.desc()
+            )  # Get the most recent task with this etag
             .limit(1)
         )
         result = await session.execute(stmt)
-        return result.scalar_one_or_none() is not None
-
-
-async def acheck_idempotency_for_task(etag: str, current_task_id: str) -> bool:
-    """Return True when another task with the same ETag should block reprocessing.
-
-    Rules:
-    - COMPLETED blocks for ``COMPLETED_DEDUPE_WINDOW_DAYS``.
-    - In-flight statuses (UPLOADED/VALIDATING/PROCESSING) block only if they were
-      updated recently (``IN_FLIGHT_DEDUPE_WINDOW_MINUTES``).
-    - FAILED/SKIPPED/PENDING never block, so retries are allowed.
-    """
-    async with aget_db_session() as session:
-        now = datetime.now(timezone.utc)
-        completed_since = now - timedelta(days=COMPLETED_DEDUPE_WINDOW_DAYS)
-        in_flight_since = now - timedelta(minutes=IN_FLIGHT_DEDUPE_WINDOW_MINUTES)
-
-        in_flight_statuses = (
-            StatusTypeEnum.UPLOADED.value,
-            StatusTypeEnum.VALIDATING.value,
-            StatusTypeEnum.PROCESSING.value,
-        )
-
-        stmt = (
-            select(DBTask.id)
-            .where(
-                DBTask.etag == etag,
-                DBTask.task_id != current_task_id,
-                or_(
-                    and_(
-                        DBTask.status == StatusTypeEnum.COMPLETED.value,
-                        DBTask.created_at >= completed_since,
-                    ),
-                    and_(
-                        DBTask.status.in_(in_flight_statuses),
-                        DBTask.updated_at >= in_flight_since,
-                    ),
-                ),
-            )
-            .limit(1)
-        )
-        result = await session.execute(stmt)
-        return result.scalar_one_or_none() is not None
+        return result.scalar_one_or_none()
 
 
 def dispatch_to_celery_process_data_task(
     etag: str,
     task_id: str,
-    metadata: dict[str, Any] | None = None,
+    metadata: MetadataResult | None = None,
     queue: str = "celery",
     priority: int = 5,
 ) -> None:
@@ -139,7 +92,7 @@ def dispatch_to_celery_process_data_task(
         The file etag for idempotency tracking.
     task_id : str
         The task identifier.
-    metadata : dict[str, Any] | None, optional
+    metadata : MetadataResult | None, optional
         Additional metadata for the task, by default None
     queue : str, optional
         The queue to dispatch to, by default "celery"
@@ -148,43 +101,6 @@ def dispatch_to_celery_process_data_task(
     """
     celery_app.send_task(
         "src.celery_app.tasks.processor.process_data",
-        kwargs={
-            "task_id": task_id,
-            "etag": etag,
-            "metadata": metadata,
-        },
-        queue=queue,
-        priority=priority,
-    )
-    logger.info(
-        f"Successfully dispatched Celery task for S3 key: {etag} to queue: {queue}"
-    )
-
-
-def dispatch_to_celery_fetch_processed_data_task(
-    etag: str,
-    task_id: str,
-    metadata: dict[str, Any] | None = None,
-    queue: str = "celery",
-    priority: int = 5,
-) -> None:
-    """Synchronous function to send the task to Celery. This will be executed in a thread pool.
-
-    Parameters
-    ----------
-    etag : str
-        The file etag for idempotency tracking.
-    task_id : str
-        The task identifier.
-    metadata : dict[str, Any] | None, optional
-        Additional metadata for the task, by default None
-    queue : str, optional
-        The queue to dispatch to, by default "celery"
-    priority : int, optional
-        The priority level (1-10, where 10 is highest), by default 5
-    """
-    celery_app.send_task(
-        "src.celery_app.tasks.processor.fetch_processed_data",
         kwargs={
             "task_id": task_id,
             "etag": etag,
@@ -223,10 +139,18 @@ async def aprocess_pdf_documents(
         for record in payload.records:
             etag: str = record.storage_entity.object.etag.replace('"', "").strip()
             storage_key: str = record.storage_entity.object.key
-            derived_task_id = _extract_task_id_from_storage_key(storage_key)
-            task_id_to_update = derived_task_id or task_id
+            derived_task_id: str | None = (
+                _extract_task_id_from_storage_key(storage_key) or task_id
+            )
 
-            # Skip output files (only process input files)
+            # Update state
+            await task_repo.aupdate_task(
+                task_id=derived_task_id,
+                update_data={"status": StatusTypeEnum.VALIDATING.value},
+            )
+
+            # Skip output files (only process input files. i.e. files uploaded by the client,
+            # not files generated by the processing pipeline)
             if "/output/" in storage_key:
                 logger.info(f"Skipping output file: {storage_key}")
                 continue
@@ -236,111 +160,117 @@ async def aprocess_pdf_documents(
                 logger.warning(f"Skipping non-PDF file: {storage_key}")
                 continue
 
-            # Idempotency check using the etag
+            # ----- Idempotency check  -----
             # This checks for any active task (VALIDATING, PROCESSING, or COMPLETED)
-            is_duplicate = await acheck_idempotency_for_task(etag, task_id_to_update)
-            if is_duplicate:
-                logger.info(
-                    f"Duplicate file detected (etag: {etag}), checking status of original task..."
-                )
-
-                # Check if there's already a completed task with this etag
-                completed_task = await task_repo.aget_tasks_by_etag(
-                    etag=etag, status=StatusTypeEnum.COMPLETED
-                )
-
-                # Update this duplicate task to SKIPPED
-                await task_repo.aupdate_task(
-                    task_id=task_id_to_update,
-                    update_data={"status": StatusTypeEnum.SKIPPED.value},
-                )
-
-                # Only fetch results if the original task is already completed
-                # If the original is still VALIDATING or PROCESSING, just skip silently
-                if completed_task:
-                    logger.info(
-                        "Original task is completed, fetching results for this duplicate..."
-                    )
-                    dispatch_to_celery_fetch_processed_data_task(
-                        etag,
-                        task_id=task_id_to_update,
-                        metadata={"reason": "duplicate"},
-                        queue="celery",
-                        # High priority to quickly fetch existing results for duplicates
-                        priority=10,
-                    )
-                else:
-                    logger.info(
-                        "Original task is still in progress (UPLOADED/VALIDATING/PROCESSING). "
-                        "This duplicate task marked as SKIPPED - results will not be fetched "
-                        "until original completes."
-                    )
-
-                continue  # Skip further processing for duplicates
-
-            # Update to validating only if not duplicate
-            logger.info(f"Updating task {task_id_to_update} to VALIDATING status")
-            await task_repo.aupdate_task(
-                task_id=task_id_to_update,
-                update_data={"status": StatusTypeEnum.VALIDATING.value},
+            logger.info(
+                f"Checking for duplicates: task_id={derived_task_id}, etag={etag}"
             )
+            existing_task = await acheck_idempotency(etag)
 
-            # Determine queue based on page count from S3 metadata (set at upload time)
-            metadata: dict[str, Any] = {}
-            try:
-                _metadata: dict[str, str] = await s3_service.aget_object_metadata(
-                    task_id=task_id_to_update,
-                    file_extension=".pdf",
-                    operation="input",
-                )
-                metadata_page_count = _metadata.get("page-count") or _metadata.get(
-                    "page_count"
-                )
-
-                if metadata_page_count is None:
-                    logger.warning(
-                        f"No page-count metadata found for task {task_id_to_update}. "
-                        f"Using default routing. Ensure page_count is passed to presigned URL."
+            if existing_task:
+                # A: If completed, skip
+                if existing_task.status == StatusTypeEnum.COMPLETED.value:
+                    logger.info(
+                        f"Duplicate detected for task_id={derived_task_id} with etag={etag}. "
+                        f"Existing status: {existing_task.status}."
                     )
-                    num_pages = 15  # Safe default to MEDIUM priority
+                    continue
 
+                # B: If the existing task failed/skipped/unprocessable, we can also skip re-processing.
+                if existing_task.status in {
+                    StatusTypeEnum.SKIPPED.value,
+                    StatusTypeEnum.UNPROCESSABLE.value,
+                }:
+                    logger.info(
+                        f"Existing task with etag={etag} has terminal status {existing_task.status}. "
+                        f"Skipping re-processing."
+                    )
+                    continue
+
+                # C: If the existing task is still in-flight (PROCESSING), we should not
+                # start a new processing task
+                if existing_task.status in {StatusTypeEnum.PROCESSING.value}:
+                    logger.info(
+                        f"Existing task with etag={etag} is currently in-flight with status "
+                        f"{existing_task.status}. Skipping new processing task to avoid race conditions."
+                    )
+                    continue
+
+            # ----- For fresh tasks -----
+            # Use existing task data if available, otherwise fetch from S3 metadata
+            metadata: dict[str, Any] = {}
+            new_task = await task_repo.aget_task_by_task_id(derived_task_id)
+
+            try:
+                # Get info
+                if new_task:
+                    num_pages = new_task.file_page_count or DEFAULT_NUM_PAGES
+                    file_size_bytes = new_task.file_size_bytes
+                    logger.info(
+                        f"New task data: {num_pages} pages, {file_size_bytes} bytes"
+                    )
                 else:
-                    try:
-                        num_pages = int(metadata_page_count)
+                    # Fetch from S3 metadata for new tasks
+                    _metadata: dict[str, str] = await s3_service.aget_object_metadata(
+                        task_id=derived_task_id,
+                        file_extension=".pdf",
+                        operation="input",
+                    )
+                    metadata_page_count = _metadata.get("page-count") or _metadata.get(
+                        "page_count"
+                    )
 
-                    except ValueError:
+                    if metadata_page_count is None:
                         logger.warning(
-                            f"Invalid page-count metadata for task {task_id_to_update}: "
-                            f"{metadata_page_count}. Using default routing."
+                            f"No page-count metadata found for task {derived_task_id}. "
+                            f"Using default routing. Ensure page_count is passed to presigned URL."
                         )
-                        num_pages = 15
+                        num_pages = DEFAULT_NUM_PAGES
+                    else:
+                        try:
+                            num_pages = int(metadata_page_count)
+                        except ValueError:
+                            logger.warning(
+                                f"Invalid page-count metadata for task {derived_task_id}: "
+                                f"{metadata_page_count}. Using default routing."
+                            )
+                            num_pages = DEFAULT_NUM_PAGES
+
+                    # For new tasks, file_size_bytes should be in DB from upload step
+                    file_size_bytes = None
 
                 metadata["page_count"] = num_pages
+                if file_size_bytes is not None:
+                    metadata["file_size_bytes"] = file_size_bytes
+
                 queue_info = get_queue_and_priority(num_pages)
 
                 logger.info(
-                    f"task_id: {task_id_to_update}: {num_pages} pages -> "
+                    f"task_id: {derived_task_id}: {num_pages} pages -> "
                     f"queue: {queue_info.queue_name}, priority: {queue_info.priority}"
                 )
 
-                # Dispatch to Celery with determined queue and priority
+                # Dispatch to Celery in a thread to avoid blocking the event loop
                 await asyncio.to_thread(
                     dispatch_to_celery_process_data_task,
-                    etag,
-                    task_id_to_update,
-                    metadata,
-                    queue_info.queue_name,
-                    queue_info.priority,
+                    etag=etag,
+                    task_id=derived_task_id,
+                    metadata=MetadataResult(**metadata),
+                    queue=queue_info.queue_name,
+                    priority=queue_info.priority,
                 )
 
             except Exception as e:
                 logger.error(
-                    f"Error routing PDF {task_id_to_update}: {e}",
+                    f"Error routing PDF {derived_task_id}: {e}",
                     exc_info=True,
                 )
                 await task_repo.aupdate_task(
-                    task_id=task_id_to_update,
-                    update_data={"status": StatusTypeEnum.FAILED.value},
+                    task_id=derived_task_id,
+                    update_data={
+                        "status": StatusTypeEnum.FAILED.value,
+                        "_metadata": MetadataResult(reason="routing_failure"),
+                    },
                 )
 
 
@@ -410,6 +340,9 @@ class IngestionWorker(BaseRabbitMQ):
         # Manually consume messages with an async iterator with more control over
         # acknowledgment and error handling
         logger.info("🔄 Starting message consumption loop...")
+        logger.info(
+            f"✅ Storage worker is ready and listening for MinIO events on queue '{queue_name}'"
+        )
         async with queue.iterator(no_ack=False) as queue_iter:
             async for message in queue_iter:
                 logger.info(f"📨 Received message: routing_key={message.routing_key}")

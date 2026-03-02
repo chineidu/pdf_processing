@@ -14,6 +14,7 @@ from src.celery_app.utils import get_document_converter
 from src.config import app_config
 from src.schemas.types import ExportFormat
 from src.services.storage import S3StorageService
+from src.utilities.utils import validate_pdf_file
 
 logger = create_logger(__name__)
 
@@ -44,34 +45,7 @@ class PDFProcessor:
         ValueError
             If the file is empty, too small, or doesn't appear to be a valid PDF.
         """
-        path = Path(filepath)
-
-        # Check if file exists
-        if not path.exists():
-            raise FileNotFoundError(f"PDF file not found: {filepath}")
-
-        # Check file size
-        file_size = path.stat().st_size
-        if file_size == 0:
-            raise ValueError(f"PDF file is empty (0 bytes): {filepath}")
-
-        if file_size < 100:  # PDFs should be at least 100 bytes
-            raise ValueError(
-                f"PDF file is too small ({file_size} bytes), likely corrupted: {filepath}"
-            )
-
-        # Check PDF header (should start with %PDF)
-        try:
-            with open(path, "rb") as f:
-                header = f.read(5)
-                if not header.startswith(b"%PDF-"):
-                    raise ValueError(
-                        f"File does not appear to be a valid PDF (missing PDF header): {filepath}"
-                    )
-        except Exception as e:
-            raise ValueError(f"Cannot read PDF file {filepath}: {e}") from e
-
-        logger.info(f"PDF validation passed: {filepath} ({file_size:,} bytes)")
+        return validate_pdf_file(filepath)
 
     def _inspect_pdf(self, filepath: str | Path) -> dict:
         """Inspect PDF and return detailed information for debugging.
@@ -321,8 +295,7 @@ class PDFProcessor:
 
         try:
             logger.info(
-                f"Converting PDF (pages={pdf_info.get('num_pages')}, "
-                f"has_text={pdf_info.get('has_text')})"
+                f"Converting PDF (pages={pdf_info.get('num_pages')}, has_text={pdf_info.get('has_text')})"
             )
             conv_result = doc_converter.convert(
                 source,

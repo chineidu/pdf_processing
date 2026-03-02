@@ -79,20 +79,35 @@ class RoleTypeEnum(StrEnum):
 class StatusTypeEnum(StrEnum):
     """General status types."""
 
-    PENDING = "pending"
-    UPLOADED = "uploaded"
-    VALIDATING = "validating"
-    PROCESSING = "processing"
-    SKIPPED = "skipped"
-    COMPLETED = "completed"
-    FAILED = "failed"
+    # --- Pre-Processing Phase ---
+    PENDING = "pending"  # Presigned URL generated; awaiting MinIO webhook.
+    UPLOADED = "uploaded"  # MinIO webhook received.
+    VALIDATING = "validating"  # Gateway is checking ETag and file type.
+
+    # --- Active Phase ---
+    PROCESSING = "processing"  # Celery worker is actively running docling OCR.
+
+    # --- Terminal Success States ---
+    COMPLETED = "completed"  # Pipeline ran successfully OR an identical ETag was found (Cache hit).
+
+    # --- Terminal Failure States ---
+    SKIPPED = "skipped"  # Valid file, but business logic rejected it (e.g., encrypted PDF, zero text).
+    UNPROCESSABLE = (
+        "unprocessable"  # Invalid/corrupt data that cannot be parsed. Do not retry.
+    )
+    FAILED = "failed"  # System/Infrastructure error (e.g., RMQ disconnect, DB timeout). Eligible for retry.
 
 
 IDEMPOTENCY_ACTIVE_STATUSES: Final = frozenset(
     [
+        # --- In-Flight States (Prevent Race Conditions) ---
+        StatusTypeEnum.UPLOADED.value,
         StatusTypeEnum.VALIDATING.value,
         StatusTypeEnum.PROCESSING.value,
+        # --- Deterministic Terminal States (Prevent Wasted Compute) ---
         StatusTypeEnum.COMPLETED.value,
+        StatusTypeEnum.SKIPPED.value,
+        StatusTypeEnum.UNPROCESSABLE.value,
     ]
 )
 

@@ -1,5 +1,5 @@
 from datetime import datetime
-from typing import Any, ClassVar
+from typing import Any, ClassVar, TypedDict
 from uuid import uuid4
 
 from pydantic import ConfigDict, EmailStr, Field, SecretStr, field_validator
@@ -181,6 +181,26 @@ ROLES: dict[str, RoleSchema] = {
 }
 
 
+class MetadataResult(TypedDict, total=False):
+    """TypedDict for metadata results.
+
+    All fields are optional.
+
+    Attributes
+    ----------
+    page_count : int | None
+        Number of pages detected in the file.
+    reason : str | None
+        Reason for early termination or special handling.
+    file_size_bytes : int | None
+        Size of the uploaded file in bytes.
+    """
+
+    page_count: int | None
+    reason: str | None
+    file_size_bytes: int | None
+
+
 class TaskSchema(BaseSchema):
     """Task schema."""
 
@@ -218,6 +238,13 @@ class TaskSchema(BaseSchema):
     )
     etag: str | None = Field(
         default=None, description="ETag of the uploaded file in S3."
+    )
+
+    # Metadata
+    metadata: MetadataResult = Field(
+        default_factory=MetadataResult,
+        validation_alias="metadata",
+        description="Additional metadata related to the task or file.",
     )
 
     # Error information
