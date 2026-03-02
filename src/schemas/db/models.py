@@ -271,7 +271,7 @@ class TaskSchema(BaseSchema):
     @field_validator("status", mode="before")
     @classmethod
     def convert_status(cls, v: Any) -> StatusTypeEnum:
-        """Convert DBRole objects or strings to StatusTypeEnum."""
+        """Convert objects or strings to StatusTypeEnum."""
         if isinstance(v, str):
             return StatusTypeEnum(v)
         return v
@@ -279,7 +279,7 @@ class TaskSchema(BaseSchema):
     @field_validator("file_type", mode="before")
     @classmethod
     def convert_file_type(cls, v: Any) -> MimeTypeEnum:
-        """Convert DBRole objects or strings to MimeTypeEnum."""
+        """Convert objects or strings to MimeTypeEnum."""
         if isinstance(v, str):
             return MimeTypeEnum(v)
         return v

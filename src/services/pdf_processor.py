@@ -1,3 +1,8 @@
+"""
+PDF processing service using Docling with enhanced error handling and
+support for browser-generated PDFs.
+"""
+
 import io
 import json
 import tempfile

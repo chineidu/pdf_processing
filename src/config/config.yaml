@@ -99,8 +99,8 @@ config:
     priority_config:
       sizes:
         # lower is higher priority
-        high_priority: 10
-        medium_priority: 50
+        high_priority: 20
+        medium_priority: 70
         low_priority: 200
       weights:
         # higher is higher priority

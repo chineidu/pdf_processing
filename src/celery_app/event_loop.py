@@ -18,51 +18,42 @@ Strategy
   -> Recreate it **only** if it gets closed unexpectedly.
 """
 
+# src/celery_app/event_loop.py
 import asyncio
+import threading
 
 from src import create_logger
 
 logger = create_logger(__name__)
-# Global event loop
-_EVENT_LOOP: asyncio.AbstractEventLoop | None = None
+
+# Thread-local storage: each thread gets its own _EVENT_LOOP instance
+_thread_local = threading.local()
 
 
 def _get_worker_event_loop() -> asyncio.AbstractEventLoop:
-    """Get or lazily initialize a stable, long-lived event loop for this worker.
+    """Get or lazily initialize a stable, long-lived event loop for this thread.
 
-    This function should be called whenever an async operation is about to run
-    inside a Celery task (or any other code running in a worker process).
+    With Celery's thread pool, multiple tasks run in separate threads.
+    Each thread must have its OWN event loop — sharing one loop across
+    threads causes 'This event loop is already running' errors.
 
     Returns
     -------
     asyncio.AbstractEventLoop
-        A stable event loop for the worker process.
+        A stable, thread-local event loop.
     """
-    global _EVENT_LOOP
+    loop: asyncio.AbstractEventLoop | None = getattr(_thread_local, "event_loop", None)
 
-    # Step 1: Check if there's already a current loop in this thread
-    try:
-        current_loop = asyncio.get_event_loop()
-    except RuntimeError:
-        # No loop is set in this thread yet; we'll create one later
-        current_loop = None
+    # Reuse if healthy
+    if loop is not None and not loop.is_closed():
+        return loop
 
-    # Step 2: If we have a current loop AND it's still alive; prefer it
-    if current_loop is not None and not current_loop.is_closed():
-        return current_loop
+    # Create a new loop for this thread
+    logger.debug(
+        f"Creating new persistent event loop for thread {threading.current_thread().name}"
+    )
+    loop = asyncio.new_event_loop()
+    asyncio.set_event_loop(loop)
+    _thread_local.event_loop = loop
 
-    # Step 3: Fall back to our global stable loop (if it exists and is healthy)
-    if _EVENT_LOOP is not None and not _EVENT_LOOP.is_closed():
-        # Make sure it's set as the current loop for this thread
-        asyncio.set_event_loop(_EVENT_LOOP)
-        return _EVENT_LOOP
-
-    # Step 4: No usable loop exists; create a fresh one and store it globally
-    # - This should only happen:
-    # - First time this worker needs async
-    # - or after the previous loop was unexpectedly closed
-    logger.debug("Creating new persistent event loop for worker")
-    _EVENT_LOOP = asyncio.new_event_loop()
-    asyncio.set_event_loop(_EVENT_LOOP)
-
-    return _EVENT_LOOP
+    return loop

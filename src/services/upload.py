@@ -215,7 +215,7 @@ client = HTTPXClient()
 async def test_upload() -> None:
     """Test the upload_file_to_s3 function with a sample file."""
 
-    filepath: Path = ROOT / Path("data/football_report.pdf")
+    filepath: Path = ROOT / Path("data/ML_role.pdf")
 
     analysis_id = "unknown"
     base_url: str = "http://0.0.0.0:8000"

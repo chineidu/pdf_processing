@@ -1,5 +1,6 @@
 """Database models and utilities."""
 
+import threading
 from contextlib import asynccontextmanager
 from datetime import datetime
 from decimal import Decimal
@@ -263,16 +264,41 @@ class DBTask(Base):
 # =========================================================
 # ==================== Utilities ==========================
 # =========================================================
-# Global pool instance
-_db_pool: AsyncDatabasePool | None = None
+
+# Thread-local storage for database pools.
+#
+# SQLAlchemy's asyncpg engine binds its internal connection pool to the
+# event loop that was running when the engine was first created.  With
+# Celery's thread pool each worker thread owns a separate event loop
+# (see event_loop.py), so a single shared engine would have its asyncpg
+# futures attached to Thread A's loop while Thread B tries to await them
+# — producing "Future attached to a different loop" RuntimeErrors.
+#
+# Giving every thread its own AsyncDatabasePool avoids the cross-loop
+# contamination entirely.  No locking is needed because threading.local
+# is inherently isolated.
+_thread_local = threading.local()
 
 
 async def aget_db_pool() -> AsyncDatabasePool:
-    """Get or create the global async database pool."""
-    global _db_pool
-    if _db_pool is None:
-        _db_pool = AsyncDatabasePool(app_settings.database_url)
-    return _db_pool
+    """Get or create a thread-local async database pool.
+
+    Each worker thread receives its own ``AsyncDatabasePool`` instance so
+    that the underlying SQLAlchemy engine and its asyncpg connections are
+    always bound to the same event loop that the calling thread owns.
+
+    Returns
+    -------
+    AsyncDatabasePool
+        A pool scoped to the current thread, created on first access.
+    """
+    pool: AsyncDatabasePool | None = getattr(_thread_local, "db_pool", None)
+
+    if pool is None:
+        pool = AsyncDatabasePool(app_settings.database_url)
+        _thread_local.db_pool = pool
+
+    return pool
 
 
 @asynccontextmanager
