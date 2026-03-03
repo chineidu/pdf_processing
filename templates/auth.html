@@ -1,0 +1,237 @@
+<!doctype html>
+<html lang="en">
+
+<head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Auth | PDF Processing</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+</head>
+
+<body class="min-h-screen bg-gradient-to-b from-slate-100 to-slate-200 text-slate-900">
+    <main class="mx-auto flex min-h-screen max-w-xl items-center justify-center p-6">
+        <section class="w-full rounded-2xl border border-slate-200 bg-white p-8 shadow-xl">
+            <div class="mb-6">
+                <span class="inline-flex rounded-full bg-slate-100 px-3 py-1 text-xs font-medium text-slate-600">PDF
+                    Processing</span>
+                <h1 class="mt-4 text-3xl font-semibold tracking-tight">Welcome back</h1>
+                <p class="mt-2 text-sm text-slate-600">Sign up or log in to continue to file upload.</p>
+            </div>
+
+            <div class="mt-5 grid grid-cols-2 gap-2 rounded-xl bg-slate-100 p-1.5">
+                <button id="tab-login"
+                    class="rounded-lg bg-white px-4 py-2.5 text-sm font-medium text-slate-900 shadow-sm transition hover:bg-slate-50">Login</button>
+                <button id="tab-signup"
+                    class="rounded-lg px-4 py-2.5 text-sm font-medium text-slate-700 transition hover:bg-slate-200">Signup</button>
+            </div>
+
+            <form id="login-form" class="mt-6 space-y-4">
+                <div>
+                    <label for="login-username" class="mb-1.5 block text-sm font-medium text-slate-700">Username</label>
+                    <input id="login-username" type="text" required
+                        class="w-full rounded-lg border border-slate-300 bg-white px-3 py-2.5 text-sm shadow-sm outline-none transition focus:border-slate-500 focus:ring-2 focus:ring-slate-200" />
+                </div>
+                <div>
+                    <label for="login-password" class="mb-1.5 block text-sm font-medium text-slate-700">Password</label>
+                    <input id="login-password" type="password" required
+                        class="w-full rounded-lg border border-slate-300 bg-white px-3 py-2.5 text-sm shadow-sm outline-none transition focus:border-slate-500 focus:ring-2 focus:ring-slate-200" />
+                </div>
+                <button id="login-submit" type="submit"
+                    class="inline-flex w-full items-center justify-center gap-2 rounded-lg bg-slate-900 px-4 py-2.5 text-sm font-medium text-white shadow-sm transition hover:bg-slate-800 disabled:cursor-not-allowed disabled:opacity-60">
+                    <svg id="login-spinner" class="hidden h-4 w-4 animate-spin text-white"
+                        xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" aria-hidden="true">
+                        <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4">
+                        </circle>
+                        <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z">
+                        </path>
+                    </svg>
+                    <span id="login-submit-label">Login</span>
+                </button>
+            </form>
+
+            <form id="signup-form" class="mt-6 hidden space-y-4">
+                <div>
+                    <label for="signup-name" class="mb-1.5 block text-sm font-medium text-slate-700">Username</label>
+                    <input id="signup-name" type="text" required
+                        class="w-full rounded-lg border border-slate-300 bg-white px-3 py-2.5 text-sm shadow-sm outline-none transition focus:border-slate-500 focus:ring-2 focus:ring-slate-200" />
+                </div>
+                <div>
+                    <label for="signup-email" class="mb-1.5 block text-sm font-medium text-slate-700">Email</label>
+                    <input id="signup-email" type="email" required
+                        class="w-full rounded-lg border border-slate-300 bg-white px-3 py-2.5 text-sm shadow-sm outline-none transition focus:border-slate-500 focus:ring-2 focus:ring-slate-200" />
+                </div>
+                <div>
+                    <label for="signup-password"
+                        class="mb-1.5 block text-sm font-medium text-slate-700">Password</label>
+                    <input id="signup-password" type="password" minlength="8" maxlength="20" required
+                        class="w-full rounded-lg border border-slate-300 bg-white px-3 py-2.5 text-sm shadow-sm outline-none transition focus:border-slate-500 focus:ring-2 focus:ring-slate-200" />
+                </div>
+                <button id="signup-submit" type="submit"
+                    class="inline-flex w-full items-center justify-center gap-2 rounded-lg bg-slate-900 px-4 py-2.5 text-sm font-medium text-white shadow-sm transition hover:bg-slate-800 disabled:cursor-not-allowed disabled:opacity-60">
+                    <svg id="signup-spinner" class="hidden h-4 w-4 animate-spin text-white"
+                        xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" aria-hidden="true">
+                        <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4">
+                        </circle>
+                        <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z">
+                        </path>
+                    </svg>
+                    <span id="signup-submit-label">Create account</span>
+                </button>
+            </form>
+
+            <p id="auth-message"
+                class="mt-5 rounded-lg border border-slate-200 bg-slate-50 p-3 text-sm text-slate-700 transition-opacity duration-200 opacity-100">
+            </p>
+        </section>
+    </main>
+
+    <script>
+        const tabLogin = document.getElementById("tab-login");
+        const tabSignup = document.getElementById("tab-signup");
+        const loginForm = document.getElementById("login-form");
+        const signupForm = document.getElementById("signup-form");
+        const authMessage = document.getElementById("auth-message");
+        const loginSubmit = document.getElementById("login-submit");
+        const signupSubmit = document.getElementById("signup-submit");
+        const loginSpinner = document.getElementById("login-spinner");
+        const signupSpinner = document.getElementById("signup-spinner");
+        const loginSubmitLabel = document.getElementById("login-submit-label");
+        const signupSubmitLabel = document.getElementById("signup-submit-label");
+
+        function setMessage(message, isError = false) {
+            authMessage.classList.remove("opacity-100");
+            authMessage.classList.add("opacity-0");
+
+            authMessage.textContent = message;
+            authMessage.className = isError
+                ? "mt-5 rounded-lg border border-red-200 bg-red-50 p-3 text-sm text-red-700 transition-opacity duration-200 opacity-0"
+                : "mt-5 rounded-lg border border-slate-200 bg-slate-50 p-3 text-sm text-slate-700 transition-opacity duration-200 opacity-0";
+
+            requestAnimationFrame(() => {
+                authMessage.classList.remove("opacity-0");
+                authMessage.classList.add("opacity-100");
+            });
+        }
+
+        function setFormLoading(formType, isLoading) {
+            const isLogin = formType === "login";
+            const form = isLogin ? loginForm : signupForm;
+            const submit = isLogin ? loginSubmit : signupSubmit;
+            const spinner = isLogin ? loginSpinner : signupSpinner;
+            const label = isLogin ? loginSubmitLabel : signupSubmitLabel;
+
+            submit.disabled = isLoading;
+            tabLogin.disabled = isLoading;
+            tabSignup.disabled = isLoading;
+
+            form.querySelectorAll("input").forEach((input) => {
+                input.disabled = isLoading;
+            });
+
+            label.textContent = isLogin
+                ? (isLoading ? "Logging in..." : "Login")
+                : (isLoading ? "Creating account..." : "Create account");
+            spinner.classList.toggle("hidden", !isLoading);
+        }
+
+        function switchTab(tab) {
+            if (tab === "login") {
+                loginForm.classList.remove("hidden");
+                signupForm.classList.add("hidden");
+                tabLogin.classList.add("bg-white", "text-slate-900", "shadow-sm");
+                tabLogin.classList.remove("text-slate-700");
+                tabSignup.classList.remove("bg-white", "text-slate-900", "shadow-sm");
+                tabSignup.classList.add("text-slate-700");
+            } else {
+                loginForm.classList.add("hidden");
+                signupForm.classList.remove("hidden");
+                tabSignup.classList.add("bg-white", "text-slate-900", "shadow-sm");
+                tabSignup.classList.remove("text-slate-700");
+                tabLogin.classList.remove("bg-white", "text-slate-900", "shadow-sm");
+                tabLogin.classList.add("text-slate-700");
+            }
+            setMessage("Enter your credentials to continue.");
+        }
+
+        async function login(username, password) {
+            const body = new URLSearchParams();
+            body.append("username", username);
+            body.append("password", password);
+
+            const response = await fetch("/api/v1/auth/token", {
+                method: "POST",
+                headers: { "Content-Type": "application/x-www-form-urlencoded" },
+                body,
+            });
+
+            if (!response.ok) {
+                const payload = await response.json().catch(() => ({}));
+                throw new Error(payload?.details || payload?.detail || "Login failed");
+            }
+
+            return response.json();
+        }
+
+        async function signup(name, email, password) {
+            const response = await fetch("/api/v1/auth/register", {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({ name, email, password }),
+            });
+
+            if (!response.ok) {
+                const payload = await response.json().catch(() => ({}));
+                throw new Error(payload?.details || payload?.detail || "Signup failed");
+            }
+
+            return response.json();
+        }
+
+        tabLogin.addEventListener("click", () => switchTab("login"));
+        tabSignup.addEventListener("click", () => switchTab("signup"));
+
+        loginForm.addEventListener("submit", async (event) => {
+            event.preventDefault();
+            const username = document.getElementById("login-username").value.trim();
+            const password = document.getElementById("login-password").value;
+
+            try {
+                setFormLoading("login", true);
+                setMessage("Logging in...");
+                const payload = await login(username, password);
+                localStorage.setItem("authToken", payload.access_token);
+                setMessage("Login successful. Redirecting...");
+                window.location.href = "/ui/upload";
+            } catch (error) {
+                setMessage(error.message || "Login failed", true);
+            } finally {
+                setFormLoading("login", false);
+            }
+        });
+
+        signupForm.addEventListener("submit", async (event) => {
+            event.preventDefault();
+            const name = document.getElementById("signup-name").value.trim();
+            const email = document.getElementById("signup-email").value.trim();
+            const password = document.getElementById("signup-password").value;
+
+            try {
+                setFormLoading("signup", true);
+                setMessage("Creating account...");
+                await signup(name, email, password);
+                const payload = await login(name, password);
+                localStorage.setItem("authToken", payload.access_token);
+                setMessage("Signup successful. Redirecting...");
+                window.location.href = "/ui/upload";
+            } catch (error) {
+                setMessage(error.message || "Signup failed", true);
+            } finally {
+                setFormLoading("signup", false);
+            }
+        });
+
+        switchTab("login");
+    </script>
+</body>
+
+</html>

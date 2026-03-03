@@ -43,3 +43,21 @@ class TaskStatusResponse(BaseSchema):
     download_urls: dict[str, str] | None = Field(
         description="Mapping of output format names to download URLs."
     )
+
+
+class TaskUploadConfirmRequest(BaseSchema):
+    """Schema for confirming successful direct upload to object storage."""
+
+    file_size_bytes: int = Field(description="Size of the uploaded file in bytes.")
+    file_type: MimeTypeEnum | None = Field(
+        default=None,
+        description="MIME type of the uploaded file.",
+    )
+    file_page_count: int | None = Field(
+        default=None,
+        description="Optional page count for uploaded PDF file.",
+    )
+    etag: str | None = Field(
+        default=None,
+        description="Optional object ETag returned by storage upload response.",
+    )

@@ -112,6 +112,19 @@ App processes:
 - `make worker-run` - start the Celery worker
 - `make storage-worker-run` - start the storage ingestion worker
 
+Web UI routes:
+
+- `/ui/auth` - login/signup page (stores JWT in browser local storage)
+- `/ui/upload` - upload workflow page (one click generates a presigned URL then uploads)
+
+Upload flow:
+
+1. Open `/ui/auth`, sign up or log in.
+2. You are redirected to `/ui/upload`.
+3. Choose a PDF/TXT/JSON file and click **Upload**.
+4. The page calls `POST /api/v1/presigned-urls` and then uploads directly to object storage with the returned URL.
+5. Use **Check task status** to query `GET /api/v1/tasks/{task_id}`.
+
 Testing and quality:
 
 - `make test`

@@ -7,6 +7,7 @@ import uvicorn
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.middleware.gzip import GZipMiddleware
+from fastapi.staticfiles import StaticFiles
 from prometheus_fastapi_instrumentator import Instrumentator
 
 from src import create_logger
@@ -16,7 +17,7 @@ from src.api.core.metrics import model_label
 from src.api.core.middleware import MIDDLEWARE_STACK
 
 # from src.api.routes import admin, apikeys, auth, health, predict, services
-from src.api.routes import auth, health, presigned_urls, tasks
+from src.api.routes import auth, health, presigned_urls, tasks, ui
 from src.config import app_config, app_settings
 from src.observability.telemetry import setup_telemetry
 
@@ -77,6 +78,8 @@ def create_application() -> FastAPI:
     # Auth routes
     # app.include_router(apikeys.router, prefix=auth_prefix)
     app.include_router(auth.router, prefix=auth_prefix)
+    app.include_router(ui.router)
+
     # # Other routes
     # app.include_router(admin.router, prefix=prefix)
     app.include_router(health.router, prefix=prefix)
@@ -84,6 +87,9 @@ def create_application() -> FastAPI:
     app.include_router(tasks.router, prefix=prefix)
     # app.include_router(predict.router, prefix=prefix)
     # app.include_router(services.router, prefix=prefix)
+
+    # Mount static files for server-rendered UI assets
+    app.mount("/static", StaticFiles(directory="static"), name="static")
 
     # Add exception handlers
     app.add_exception_handler(BaseAPIError, api_error_handler)  # type: ignore
