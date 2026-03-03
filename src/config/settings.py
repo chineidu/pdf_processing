@@ -92,6 +92,12 @@ class BaseConfig(BaseSettings):
     WEBHOOK_TIMEOUT_SECONDS: int = 5  # Timeout for webhook requests in seconds
     WEBHOOK_MAX_RETRIES: int = 3  # Maximum number of retry attempts for failed webhooks
 
+    # ===== INGESTION WORKER =====
+    # Exponential backoff delays (in seconds) for rechecking in-flight duplicate tasks.
+    # When a duplicate arrives while the original is PROCESSING/VALIDATING, wait and recheck
+    # to avoid dispatching both. Format: comma-separated delays (e.g., "2,5" = wait 2s, then 5s)
+    INFLIGHT_RECHECK_DELAYS: str = "2,5"  # Total wait: 7 seconds
+
     # ===== VHOSTS =====
     STORAGE_VHOST: str = "storage_events"
     CELERY_VHOST: str = "/celery_tasks"

@@ -97,7 +97,7 @@ async def upload_file_to_s3(
         # Run in a thread to avoid blocking the event loop with CPU-bound operation
         page_count = await asyncio.to_thread(get_pdf_page_count_from_bytes, file_data)
         if page_count:
-            logger.info(f"Detected {page_count} pages in {filename} for queue routing")
+            logger.info(f"Detected '{page_count}' pages in {filename}")
 
     # Step 1: Get a presigned URL for uploading the file
     result: dict[str, Any] = await _aget_presigned_url(

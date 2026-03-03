@@ -36,13 +36,19 @@ class BaseCustomTask(Task):
         Enables exponential backoff for retry delays.
     retry_backoff_max : int
         The maximum delay in seconds for exponential backoff.
+    retry_jitter : bool
+        Enables jitter to randomize retry delays and avoid thundering herd problems.
     """
 
     autoretry_for = (Exception,)
     throws = (Exception,)  # Log full traceback on retry
     default_retry_delay = 30  # 30 seconds
     max_retries = 5
+
+    # Exponential backoff + jitter to avoid synchronized retries
     retry_backoff = True
+    retry_backoff_max = 300  # cap at 5 minutes
+    retry_jitter = True
 
 
 class CustomTask(BaseCustomTask):

@@ -28,7 +28,10 @@ MAX_SIZE_BYTES: int = app_config.pdf_processing_config.max_file_size_bytes
 # Helper functions for async operations within the Celery task
 # -------------------------------------------------------------------
 async def aupdate_task_metadata(
-    task_id: str, uploaded_files: dict[str, str], status: StatusTypeEnum
+    task_id: str,
+    uploaded_files: dict[str, str],
+    status: StatusTypeEnum,
+    update_data: dict[str, Any] | None = None,
 ) -> str | None:
     """Update task metadata in database after async processing completes.
 
@@ -40,6 +43,8 @@ async def aupdate_task_metadata(
         Dictionary mapping format names to S3 URLs.
     status : StatusTypeEnum
         The status to set for the task (e.g., COMPLETED or FAILED).
+    update_data : dict[str, Any] | None
+        Additional fields to update in the task record, if any.
 
     Returns
     -------
@@ -54,6 +59,7 @@ async def aupdate_task_metadata(
             update_data={
                 "status": status.value,
                 "file_result_key": MSGSPEC_ENCODER.encode(uploaded_files).decode(),
+                **(update_data or {}),
             },
             add_completed_at=True,
         )
@@ -219,8 +225,15 @@ async def avalidation_checks(
             )
 
             # Update task metadata in database
+            metadata_copy = metadata.copy()
+            metadata_copy["reason"] = (
+                "exceeds_page_limit" if page_count > max_pages else "exceeds_size_limit"
+            )
             webhook_url = await aupdate_task_metadata(
-                task_id, {}, StatusTypeEnum.COMPLETED
+                task_id,
+                {},
+                StatusTypeEnum.COMPLETED,
+                update_data={"_metadata": metadata_copy},
             )
             return await asend_success_notification(
                 etag=etag,
@@ -228,7 +241,7 @@ async def avalidation_checks(
                 uploaded_files={},
                 webhook_url=webhook_url,
                 webhook_service=webhook_service,
-                metadata=MetadataResult(**metadata),
+                metadata=MetadataResult(**metadata_copy),
             )
 
         # Else:
@@ -356,11 +369,14 @@ def process_data(
                 )
 
                 # Update task metadata in database
-                webhook_url = await aupdate_task_metadata(
-                    task_id, uploaded_files, StatusTypeEnum.COMPLETED
-                )
                 task_metadata = metadata.copy() if metadata is not None else {}
                 task_metadata["reason"] = "processed"
+                webhook_url = await aupdate_task_metadata(
+                    task_id,
+                    uploaded_files,
+                    status=StatusTypeEnum.COMPLETED,
+                    update_data={"_metadata": task_metadata},
+                )
 
                 return await asend_success_notification(
                     etag=etag,
@@ -398,7 +414,13 @@ def process_data(
             async def aprocess_failure(error: Exception) -> None:
                 """Async workflow to update DB and send failure notification on terminal failure."""
                 webhook_url = await aupdate_task_metadata(
-                    task_id, uploaded_files={}, status=StatusTypeEnum.FAILED
+                    task_id,
+                    uploaded_files={},
+                    status=StatusTypeEnum.FAILED,
+                    update_data={
+                        "_metadata": MetadataResult(reason="processing_failed"),
+                        "error_message": str(error)[:1_000],
+                    },  # Truncate error message to prevent DB issues
                 )
                 await asend_failure_notification(
                     etag=etag,
