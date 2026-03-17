@@ -1,0 +1,2 @@
+DELETE FROM tasks
+WHERE etag = 'e51ae295d96b5d7c3e063edf4e18d792';
