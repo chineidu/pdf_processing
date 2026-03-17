@@ -1,7 +1,7 @@
 """Tests for src/schemas/ — Pydantic models and validators."""
 
 import pytest
-from pydantic import ValidationError
+from pydantic import SecretStr, ValidationError
 
 from src.schemas.db.models import (
     BaseUserSchema,
@@ -56,14 +56,18 @@ class TestBaseUserSchema:
         assert user.roles == []
 
     def test_convert_roles_from_string(self):
-        user = BaseUserSchema(name="admin", email="a@example.com", roles=["admin"])
+        user = BaseUserSchema.model_validate(
+            {"name": "admin", "email": "a@example.com", "roles": ["admin"]}
+        )
         assert user.roles == [RoleTypeEnum.ADMIN]
 
     def test_convert_roles_from_object_with_name_attr(self):
         class FakeRole:
             name = "user"
 
-        user = BaseUserSchema(name="u", email="u@example.com", roles=[FakeRole()])
+        user = BaseUserSchema.model_validate(
+            {"name": "u", "email": "u@example.com", "roles": [FakeRole()]}
+        )
         assert user.roles == [RoleTypeEnum.USER]
 
 
@@ -94,7 +98,7 @@ class TestUserCreateSchema:
         user = UserCreateSchema(
             name="carol",
             email="carol@example.com",
-            password="securepass123",
+            password=SecretStr("securepass123"),
         )
         assert user.name == "carol"
 
@@ -103,7 +107,7 @@ class TestUserCreateSchema:
             UserCreateSchema(
                 name="short",
                 email="short@example.com",
-                password="abc",
+                password=SecretStr("abc"),
             )
 
     def test_password_too_long_raises_validation_error(self):
@@ -111,14 +115,14 @@ class TestUserCreateSchema:
             UserCreateSchema(
                 name="long",
                 email="long@example.com",
-                password="a" * 21,
+                password=SecretStr("a" * 21),
             )
 
     def test_password_is_secret_str(self):
         user = UserCreateSchema(
             name="carol",
             email="carol@example.com",
-            password="securepass123",
+            password=SecretStr("securepass123"),
         )
         # SecretStr should not expose the value in str()
         assert "securepass123" not in str(user)
