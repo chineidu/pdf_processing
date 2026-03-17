@@ -161,6 +161,31 @@ DANGEROUS_SCOPES: Final = frozenset(
 )
 
 
+class DBUpdateReasonEnum(StrEnum):
+    """Reasons for updating a database record"""
+
+    ENCRYPTED_FILE = "encrypted_file"  # Document is encrypted and cannot be processed
+    EXCEEDS_PAGE_LIMIT = "exceeds_page_limit"  # Document has more pages than allowed
+    EXCEEDS_SIZE_LIMIT = (
+        "exceeds_size_limit"  # Document file size exceeds allowed limit
+    )
+    IDENTICAL_DATA = (
+        "identical_data"  # New data is identical to existing (e.g., same ETag)
+    )
+    INVALID_FILE_TYPE = "invalid_file_type"  # Document has an unsupported file type
+    OCR_FAILURE = (
+        "ocr_failure"  # OCR process failed (e.g., unreadable content, corrupted file)
+    )
+    PROCESSED = (
+        "processed"  # Document was successfully processed and data was extracted
+    )
+    PROCESSING_FAILED = (
+        "processing_failed"  # Document processing failed due to an error
+    )
+    SYSTEM_ERROR = "system_error"  # Unexpected system error during processing
+    ZERO_TEXT = "zero_text"  # Document contains no extractable text
+
+
 class DocumentValidationResult(TypedDict):
     valid: bool
     errors: list[str]

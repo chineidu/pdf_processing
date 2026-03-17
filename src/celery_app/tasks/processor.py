@@ -14,8 +14,8 @@ from src.db.models import aget_db_session
 from src.db.repositories.task_repository import TaskRepository
 from src.schemas.db.models import MetadataResult, TaskSchema
 from src.schemas.tasks.processor import ProcessDataTaskResult
-from src.schemas.types import ExportFormat, StatusTypeEnum
-from src.utilities.utils import MSGSPEC_ENCODER
+from src.schemas.types import DBUpdateReasonEnum, ExportFormat, StatusTypeEnum
+from src.utilities.utils import json_dumps
 
 logger = create_logger(name=__name__)
 logger.propagate = False  # This prevents double logging to the root logger
@@ -58,7 +58,7 @@ async def aupdate_task_metadata(
             task_id=task_id,
             update_data={
                 "status": status.value,
-                "file_result_key": MSGSPEC_ENCODER.encode(uploaded_files).decode(),
+                "file_result_key": json_dumps(uploaded_files),
                 **(update_data or {}),
             },
             add_completed_at=True,
@@ -227,7 +227,9 @@ async def avalidation_checks(
             # Update task metadata in database
             metadata_copy = metadata.copy()
             metadata_copy["reason"] = (
-                "exceeds_page_limit" if page_count > max_pages else "exceeds_size_limit"
+                DBUpdateReasonEnum.EXCEEDS_PAGE_LIMIT.value
+                if page_count > max_pages
+                else DBUpdateReasonEnum.EXCEEDS_SIZE_LIMIT.value
             )
             webhook_url = await aupdate_task_metadata(
                 task_id,
@@ -304,9 +306,9 @@ def process_data(
             metadata_copy["file_size_bytes"] = file_size_int
             # If page count exceeds limit or file size exceeds limit
             metadata_copy["reason"] = (
-                "exceeds_page_limit"
+                DBUpdateReasonEnum.EXCEEDS_PAGE_LIMIT.value
                 if page_count_int > MAX_PAGES
-                else "exceeds_size_limit"
+                else DBUpdateReasonEnum.EXCEEDS_SIZE_LIMIT.value
             )
 
             loop = _get_worker_event_loop()
@@ -370,7 +372,7 @@ def process_data(
 
                 # Update task metadata in database
                 task_metadata = metadata.copy() if metadata is not None else {}
-                task_metadata["reason"] = "processed"
+                task_metadata["reason"] = DBUpdateReasonEnum.PROCESSED.value
                 webhook_url = await aupdate_task_metadata(
                     task_id,
                     uploaded_files,
@@ -418,7 +420,9 @@ def process_data(
                     uploaded_files={},
                     status=StatusTypeEnum.FAILED,
                     update_data={
-                        "_metadata": MetadataResult(reason="processing_failed"),
+                        "_metadata": MetadataResult(
+                            reason=DBUpdateReasonEnum.PROCESSING_FAILED.value
+                        ),
                         "error_message": str(error)[:1_000],
                     },  # Truncate error message to prevent DB issues
                 )

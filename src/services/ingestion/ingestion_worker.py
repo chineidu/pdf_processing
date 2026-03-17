@@ -21,7 +21,11 @@ from src.db.models import DBTask, aget_db_session
 from src.db.repositories.task_repository import TaskRepository
 from src.schemas.db.models import MetadataResult
 from src.schemas.services.ingestion_worker import QueueArguments, StorageEventPayload
-from src.schemas.types import IDEMPOTENCY_ACTIVE_STATUSES, StatusTypeEnum
+from src.schemas.types import (
+    IDEMPOTENCY_ACTIVE_STATUSES,
+    DBUpdateReasonEnum,
+    StatusTypeEnum,
+)
 from src.services.ingestion.base import BaseRabbitMQ
 from src.services.ingestion.utilities import (
     get_queue_and_priority,
@@ -151,7 +155,7 @@ async def _await_and_recheck_inflight(
                     "_metadata": MetadataResult(
                         page_count=updated_task.file_page_count,
                         file_size_bytes=updated_task.file_size_bytes,
-                        reason="identical_content",
+                        reason=DBUpdateReasonEnum.IDENTICAL_DATA.value,
                     ),
                 },
                 add_completed_at=True,
@@ -167,7 +171,7 @@ async def _await_and_recheck_inflight(
                 metadata=MetadataResult(
                     page_count=updated_task.file_page_count,
                     file_size_bytes=updated_task.file_size_bytes,
-                    reason="identical_content",
+                    reason=DBUpdateReasonEnum.IDENTICAL_DATA.value,
                 ),
             )
             return True
@@ -190,7 +194,7 @@ async def _await_and_recheck_inflight(
                     "_metadata": MetadataResult(
                         page_count=updated_task.file_page_count,
                         file_size_bytes=updated_task.file_size_bytes,
-                        reason="identical_content",
+                        reason=DBUpdateReasonEnum.IDENTICAL_DATA.value,
                     ),
                 },
                 add_completed_at=True,
@@ -204,7 +208,7 @@ async def _await_and_recheck_inflight(
                 metadata=MetadataResult(
                     page_count=updated_task.file_page_count,
                     file_size_bytes=updated_task.file_size_bytes,
-                    reason="identical_content",
+                    reason=DBUpdateReasonEnum.IDENTICAL_DATA.value,
                 ),
             )
             return True
@@ -386,7 +390,7 @@ async def aprocess_pdf_documents(
                             "_metadata": MetadataResult(
                                 page_count=idempotent_task.file_page_count,
                                 file_size_bytes=idempotent_task.file_size_bytes,
-                                reason="identical_content",
+                                reason=DBUpdateReasonEnum.IDENTICAL_DATA.value,
                             ),
                         },
                         add_completed_at=True,
@@ -402,7 +406,7 @@ async def aprocess_pdf_documents(
                         metadata=MetadataResult(
                             page_count=idempotent_task.file_page_count,
                             file_size_bytes=idempotent_task.file_size_bytes,
-                            reason="identical_content",
+                            reason=DBUpdateReasonEnum.IDENTICAL_DATA.value,
                         ),
                     )
                     continue
@@ -425,7 +429,7 @@ async def aprocess_pdf_documents(
                             "_metadata": MetadataResult(
                                 page_count=idempotent_task.file_page_count,
                                 file_size_bytes=idempotent_task.file_size_bytes,
-                                reason="identical_content",
+                                reason=DBUpdateReasonEnum.IDENTICAL_DATA.value,
                             ),
                         },
                         add_completed_at=True,
@@ -439,7 +443,7 @@ async def aprocess_pdf_documents(
                         metadata=MetadataResult(
                             page_count=idempotent_task.file_page_count,
                             file_size_bytes=idempotent_task.file_size_bytes,
-                            reason="identical_content",
+                            reason=DBUpdateReasonEnum.IDENTICAL_DATA.value,
                         ),
                     )
                     continue
@@ -608,7 +612,9 @@ async def aprocess_pdf_documents(
                         task_id=derived_task_id,
                         update_data={
                             "status": StatusTypeEnum.FAILED.value,
-                            "_metadata": MetadataResult(reason="routing_failure"),
+                            "_metadata": MetadataResult(
+                                reason=DBUpdateReasonEnum.SYSTEM_ERROR.value
+                            ),
                             "error_message": str(e)[
                                 :1_000
                             ],  # Truncate error message to prevent DB issues

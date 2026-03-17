@@ -15,7 +15,7 @@ from fastapi.encoders import jsonable_encoder
 
 from src import create_logger
 from src.config import app_settings
-from src.utilities.utils import MSGSPEC_ENCODER, sort_dict
+from src.utilities.utils import json_dumps, sort_dict
 
 logger = create_logger(name=__name__)
 type CacheDecorator = Callable[..., Callable[..., Coroutine[Any, Any, Any]]]
@@ -183,11 +183,12 @@ def _generate_cache_key(
         or a prefixed MD5 hash (e.g., 'user_cache:abcdef1234567890').
     """
     # Create a deterministic string from params
-    params_str: str = MSGSPEC_ENCODER.encode(sort_dict(params)).decode()
+    params_str: str = json_dumps(sort_dict(params))
+
     key_content: str = f"{path}:{params_str}"
 
     if payload:
-        serialized_payload = MSGSPEC_ENCODER.encode(sort_dict(payload)).decode()
+        serialized_payload: str = json_dumps(sort_dict(payload))
         key_content += f":{serialized_payload}"
 
     # Hash for shorter keys

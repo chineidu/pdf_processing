@@ -23,6 +23,22 @@ MSGSPEC_ENCODER = msgspec.json.Encoder()
 MSGSPEC_DECODER = msgspec.json.Decoder()
 
 
+def json_dumps(data: Any) -> str:
+    """Serialize data to a JSON string using msgspec.
+
+    Parameters
+    ----------
+    data : Any
+        The data to serialize.
+
+    Returns
+    -------
+    str
+        The JSON string representation of the data.
+    """
+    return MSGSPEC_ENCODER.encode(data).decode("utf-8")
+
+
 def sort_dict(data: dict[str, Any]) -> dict[str, Any]:
     """Recursively sort a dictionary by its keys.
 

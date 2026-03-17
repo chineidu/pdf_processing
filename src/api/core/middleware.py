@@ -24,7 +24,7 @@ from src.api.core.responses import MsgSpecJSONResponse
 from src.config import app_settings
 from src.schemas.types import ErrorCodeEnum
 from src.services.billing import adeduct_credits_background
-from src.utilities.utils import MSGSPEC_ENCODER
+from src.utilities.utils import json_dumps
 
 logger = create_logger(name=__name__)
 
@@ -78,7 +78,7 @@ class LoggingMiddleware(BaseHTTPMiddleware):
         }
 
         # Use msgspec for optimized serialization
-        logger.info(MSGSPEC_ENCODER.encode(log).decode("utf-8"))
+        logger.info(json_dumps(log))
 
         return response
 
