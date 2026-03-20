@@ -1,10 +1,12 @@
-# src/celery_app/tasks/processor.py
+import base64
 import tempfile
 from pathlib import Path
 from typing import Any
 
+import fitz  # PyMuPDF
 import pendulum
-from celery import shared_task
+from celery import chord, group, shared_task
+from celery.result import allow_join_result
 
 from src import create_logger
 from src.celery_app import CustomTask
@@ -14,14 +16,126 @@ from src.db.models import aget_db_session
 from src.db.repositories.task_repository import TaskRepository
 from src.schemas.db.models import MetadataResult, TaskSchema
 from src.schemas.tasks.processor import ProcessDataTaskResult
-from src.schemas.types import DBUpdateReasonEnum, ExportFormat, StatusTypeEnum
-from src.utilities.utils import json_dumps
+from src.schemas.types import (
+    DBUpdateReasonEnum,
+    ExportFormat,
+    PDFOutputResult,
+    StatusTypeEnum,
+)
+from src.utilities.utils import MSGSPEC_DECODER, json_dumps
 
 logger = create_logger(name=__name__)
 logger.propagate = False  # This prevents double logging to the root logger
 
 MAX_PAGES: int = app_config.pdf_processing_config.max_num_pages
+CHUNK_SIZE: int = app_config.pdf_processing_config.chunk_size
 MAX_SIZE_BYTES: int = app_config.pdf_processing_config.max_file_size_bytes
+
+
+def _get_task_routing_options(task: Any) -> dict[str, Any]:
+    """Infer queue/routing key/priority from the currently executing Celery task."""
+
+    request = getattr(task, "request", None)
+    if request is None:
+        return {}
+
+    delivery_info = getattr(request, "delivery_info", {})
+    properties = getattr(request, "properties", {})
+
+    routing_key = delivery_info.get("routing_key") or delivery_info.get("queue")
+    options: dict[str, Any] = {}
+
+    if routing_key:
+        options["queue"] = routing_key
+        options["routing_key"] = routing_key
+
+    priority = properties.get("priority")
+    if priority is None:
+        priority = delivery_info.get("priority")
+
+    if priority is not None:
+        options["priority"] = int(priority)
+
+    return options
+
+
+def _encode_processed_outputs(outputs: dict[str, bytes]) -> dict[str, str]:
+    """Convert bytes outputs into base64 strings for broker-safe task payloads."""
+    # Encode bytes to base64 strings so Celery/RabbitMQ can transport them safely
+    return {
+        key: base64.b64encode(value).decode("ascii") for key, value in outputs.items()
+    }
+
+
+def _decode_processed_outputs(outputs: dict[str, str]) -> dict[str, bytes]:
+    """Decode base64 task payload outputs back to raw bytes."""
+    # Decode base64-encoded outputs back to raw bytes for post-processing
+    return {
+        key: base64.b64decode(value.encode("ascii")) for key, value in outputs.items()
+    }
+
+
+def _normalize_processed_outputs(outputs: PDFOutputResult) -> dict[str, bytes]:
+    """Flatten PDFOutputResult into broker-safe byte payloads.
+
+    Celery transports a flat key/value map, so nested table outputs are expanded
+    to top-level table_N keys and empty values are dropped.
+    """
+
+    normalized_outputs: dict[str, bytes] = {}
+
+    for key in ("doctags", "json", "markdown", "text"):
+        value = outputs.get(key)
+        if value is None:
+            # Skip empty values to avoid unnecessary task payload bloat
+            continue
+        # Else: encode string values to bytes if needed, and include in payload
+        normalized_outputs[key] = (
+            value.encode("utf-8") if isinstance(value, str) else value
+        )
+
+    for table_key, table_value in outputs.get("tables", {}).items():
+        if table_value is None:
+            continue
+        normalized_outputs[table_key] = (
+            table_value.encode("utf-8") if isinstance(table_value, str) else table_value
+        )
+
+    return normalized_outputs
+
+
+def _chunk_page_ranges(total_pages: int, chunk_size: int) -> list[tuple[int, int, int]]:
+    """Build (chunk_idx, start_page, end_page) ranges from total page count."""
+    if total_pages <= 0:
+        return []
+
+    safe_chunk_size = max(1, chunk_size)
+    # chunk_idx, start_page, end_page
+    ranges: list[tuple[int, int, int]] = []
+    chunk_idx = 1
+    start_page = 0
+
+    while start_page < total_pages:
+        end_page = min(start_page + safe_chunk_size - 1, total_pages - 1)
+        ranges.append((chunk_idx, start_page, end_page))
+        chunk_idx += 1
+        # Move to the next page (of the next chunk)
+        start_page = end_page + 1
+
+    return ranges
+
+
+def _sort_table_keys(output_keys: list[str]) -> list[str]:
+    """Sort table keys like table_1, table_2 numerically."""
+
+    def _table_index(key: str) -> int:
+        try:
+            return int(key.split("_", 1)[1])
+        except (IndexError, ValueError):
+            return 0
+
+    # Ensure table keys are ordered numerically (table_1, table_2, ...)
+    return sorted(output_keys, key=_table_index)
 
 
 # -------------------------------------------------------------------
@@ -51,6 +165,7 @@ async def aupdate_task_metadata(
     str | None
         Webhook URL stored on the task, if present.
     """
+    # Persist final file URLs and status to the DB, return any webhook URL
 
     async with aget_db_session() as session:
         task_repo = TaskRepository(db=session)
@@ -72,6 +187,7 @@ async def aupdate_task_metadata(
 
 async def aupdate_task_status(task_id: str, status: StatusTypeEnum) -> None:
     """Update the status of a task without touching other fields."""
+    # Lightweight status-only update used to mark processing states
     async with aget_db_session() as session:
         task_repo = TaskRepository(db=session)
         await task_repo.aupdate_task(
@@ -82,6 +198,7 @@ async def aupdate_task_status(task_id: str, status: StatusTypeEnum) -> None:
 
 async def aupdate_webhook_delivered_at(task_id: str) -> None:
     """Store the timestamp for a successfully delivered webhook."""
+    # Record the time we successfully delivered a webhook for auditing
 
     async with aget_db_session() as session:
         task_repo = TaskRepository(db=session)
@@ -93,6 +210,7 @@ async def aupdate_webhook_delivered_at(task_id: str) -> None:
 
 async def afetch_task(etag: str) -> TaskSchema | None:
     """Fetch the first completed task by ETag."""
+    # Helper to find an existing completed task for idempotency checks
 
     async with aget_db_session() as session:
         task_repo = TaskRepository(db=session)
@@ -173,6 +291,7 @@ async def asend_failure_notification(
     )
 
     if webhook_sent:
+        # Failure notifications are sent on terminal errors to inform callers
         await aupdate_webhook_delivered_at(task_id)
 
 
@@ -181,9 +300,8 @@ async def avalidation_checks(
     task_id: str,
     metadata: MetadataResult | None,
     webhook_service: Any,
-    max_pages: int,
 ) -> dict[str, Any] | None:
-    """Check if page count exceeds maximum allowed pages and handle accordingly.
+    """Check if file size exceeds maximum allowed size and handle accordingly.
 
     Parameters
     ----------
@@ -192,12 +310,9 @@ async def avalidation_checks(
     task_id : str
         Task identifier.
     metadata : MetadataResult | None
-        Metadata containing page count information.
+        Metadata containing file size information.
     webhook_service : Any
         Service for sending webhooks.
-    max_pages : int
-        Maximum allowed number of pages.
-
     Returns
     -------
     dict[str, Any] | None
@@ -205,32 +320,27 @@ async def avalidation_checks(
         None if page count is within limits.
     """
 
+    # If no metadata was provided, there are no pre-checks to run
     if metadata is None:
         return None
 
     try:
-        page_count_value = metadata["page_count"]
         file_size_bytes = metadata["file_size_bytes"]
 
-        if page_count_value is None or file_size_bytes is None:
+        if file_size_bytes is None:
             return None
-        page_count: int = int(page_count_value)
         file_size: int = int(file_size_bytes)
 
-        if page_count > max_pages or file_size > MAX_SIZE_BYTES:
+        if file_size > MAX_SIZE_BYTES:
             logger.warning(
-                f"Task {task_id} has page count {page_count} which exceeds the maximum of "
-                f"{max_pages} OR file size {file_size:,} which exceeds the maximum of "
+                f"Task {task_id} has file size {file_size:,} which exceeds the maximum of "
                 f"{MAX_SIZE_BYTES:,} bytes. Marking as completed without processing."
             )
 
-            # Update task metadata in database
+            # When file is too large, mark as completed without processing
+            # and trigger the success webhook with an empty result set
             metadata_copy = metadata.copy()
-            metadata_copy["reason"] = (
-                DBUpdateReasonEnum.EXCEEDS_PAGE_LIMIT.value
-                if page_count > max_pages
-                else DBUpdateReasonEnum.EXCEEDS_SIZE_LIMIT.value
-            )
+            metadata_copy["reason"] = DBUpdateReasonEnum.EXCEEDS_SIZE_LIMIT.value
             webhook_url = await aupdate_task_metadata(
                 task_id,
                 {},
@@ -246,36 +356,284 @@ async def avalidation_checks(
                 metadata=MetadataResult(**metadata_copy),
             )
 
-        # Else:
-        # Page count is within limits - continue processing
+        # File size within limits — continue with processing
         logger.info(
-            f"Task {task_id} has {page_count} pages (within limit of {max_pages}) "
-            f"OR file size {file_size:,} bytes (within limit of {MAX_SIZE_BYTES:,} bytes). "
-            "Continuing with processing."
+            f"Task {task_id} file size {file_size:,} bytes is within limit of {MAX_SIZE_BYTES:,} bytes."
         )
         return None
 
     except (ValueError, KeyError) as e:
         logger.warning(
-            f"Invalid page count in metadata for task_id {task_id}: {metadata.get('page_count')}. Error: {e}"
+            f"Invalid file size metadata for task_id {task_id}: {metadata.get('file_size_bytes')}. Error: {e}"
         )
         # Continue processing despite invalid metadata
         return None
 
 
+async def aprocess_and_update(
+    etag: str,
+    task_id: str,
+    filepath: str,
+    metadata: MetadataResult | None,
+    processor: Any,
+    s3_service: Any,
+    webhook_service: Any,
+    routing_options: dict[str, Any],
+) -> dict[str, Any]:
+    """Combined async workflow: chunked processing (scatter), (combine processed chunk results) gather,
+    upload, and update database."""
+
+    # Download file from S3-compatible storage into the worker temp dir
+    await s3_service.adownload_file_from_s3(
+        filepath=filepath,
+        task_id=task_id,
+        file_extension=".pdf",
+        operation="input",
+    )
+
+    with fitz.open(filepath) as pdf_doc:
+        total_pages = pdf_doc.page_count
+
+    # Compute page chunks for processing; empty if no pages
+    if total_pages <= 0:
+        logger.warning(
+            f"Task {task_id} PDF has zero pages; skipping processing outputs"
+        )
+        # (chunk_idx, start_page, end_page)
+        chunk_ranges: list[tuple[int, int, int]] = []
+
+    else:
+        # (chunk_idx, start_page, end_page)
+        chunk_ranges = _chunk_page_ranges(
+            total_pages=total_pages,
+            chunk_size=CHUNK_SIZE,
+        )
+
+    logger.info(
+        f"Processing task {task_id} in {len(chunk_ranges)} chunk(s) for {total_pages} page(s)"
+    )
+
+    chunk_signatures = [
+        process_single_chunk.s(
+            etag=etag,
+            task_id=task_id,
+            chunk_idx=chunk_idx,
+            start_page=start_page,
+            end_page=end_page,
+            export_format=ExportFormat.MARKDOWN.value,
+        ).set(**routing_options)
+        for chunk_idx, start_page, end_page in chunk_ranges
+    ]
+
+    # Orchestrator blocks here intentionally — allow_join_result() permits .get()
+    # inside a worker. It ensures this task runs on a dedicated queue to avoid
+    # deadlocking with process_single_chunk workers competing for the same slots.
+    # `.get` is used because we need the results to proceed with combining and uploading.
+    if chunk_signatures:
+        with allow_join_result():
+            encoded_outputs: dict[str, str] = (
+                chord(
+                    group(chunk_signatures),
+                    combine_processed_chunks.s().set(**routing_options),
+                )
+                .apply_async()
+                .get()
+            )
+    else:
+        encoded_outputs = {}
+
+    # Decode merged outputs and upload processed artifacts to S3
+    combined_outputs = _decode_processed_outputs(encoded_outputs)
+    uploaded_files: dict[str, str] = await processor.aupload(
+        s3_service=s3_service,
+        processed_outputs=combined_outputs,
+        task_id=task_id,
+    )
+
+    # Persist uploaded file locations and mark task as completed
+    task_metadata = metadata.copy() if metadata is not None else {}
+    task_metadata["reason"] = DBUpdateReasonEnum.PROCESSED.value
+    webhook_url = await aupdate_task_metadata(
+        task_id,
+        uploaded_files,
+        status=StatusTypeEnum.COMPLETED,
+        update_data={"_metadata": task_metadata},
+    )
+
+    return await asend_success_notification(
+        etag=etag,
+        task_id=task_id,
+        uploaded_files=uploaded_files,
+        webhook_url=webhook_url,
+        webhook_service=webhook_service,
+        metadata=MetadataResult(**task_metadata),
+    )
+
+
+async def aprocess_failure(
+    etag: str,
+    task_id: str,
+    uploaded_files: dict[str, str],
+    exc: Exception,
+    retries: int,
+    webhook_service: Any,
+) -> None:
+    """Async workflow to update DB and send failure notification on terminal failure."""
+    webhook_url = await aupdate_task_metadata(
+        task_id,
+        uploaded_files=uploaded_files,
+        status=StatusTypeEnum.FAILED,
+        update_data={
+            "_metadata": MetadataResult(
+                reason=DBUpdateReasonEnum.PROCESSING_FAILED.value
+            ),
+            "error_message": str(exc)[:1_000],
+        },  # Truncate error message to prevent DB issues
+    )
+    await asend_failure_notification(
+        etag=etag,
+        task_id=task_id,
+        webhook_url=webhook_url,
+        error=exc,
+        webhook_service=webhook_service,
+        retries=retries,
+    )
+    return
+
+
 # -------------------------------------------------------------------
-# Main processing task
+# Individual chunk processing
 # -------------------------------------------------------------------
 # Note: When `bind=True`, celery automatically passes the task instance as the first argument
 # meaning that we need to use `self` and this provides additional functionality like retries, etc
 @shared_task(bind=True, base=CustomTask)
-def process_data(
+def process_single_chunk(  # noqa: ANN201
+    self,  # noqa: ANN001
+    etag: str,
+    task_id: str,
+    chunk_idx: int,
+    start_page: int,
+    end_page: int,
+    export_format: str = ExportFormat.MARKDOWN.value,
+) -> dict[str, Any]:
+    """Process a single PDF chunk and return broker-safe serialized chunk outputs."""
+
+    # Extract a page-range from the source PDF, run the processor on it, and
+    # encode outputs as base64 strings so they're safe to pass through the broker.
+
+    processor = self.processor
+    s3_service = self.s3_service
+    loop = _get_worker_event_loop()
+
+    with tempfile.TemporaryDirectory() as tmp_dir:
+        tmp_path = Path(tmp_dir)
+        source_file = tmp_path / f"{task_id}.pdf"
+        chunk_file = tmp_path / f"{task_id}-chunk-{chunk_idx}.pdf"
+
+        async def aprocess_chunk() -> dict[str, Any]:
+            await s3_service.adownload_file_from_s3(
+                filepath=str(source_file),
+                task_id=task_id,
+                file_extension=".pdf",
+                operation="input",
+            )
+
+            source_doc = fitz.open(str(source_file))
+            chunk_doc = fitz.open()
+            chunk_doc.insert_pdf(source_doc, from_page=start_page, to_page=end_page)
+            chunk_doc.save(str(chunk_file))
+            chunk_doc.close()
+            source_doc.close()
+
+            processed_outputs: PDFOutputResult = await processor.aprocess_data(
+                source=chunk_file,
+                task_id=f"{task_id}-chunk-{chunk_idx}",
+                export_format=ExportFormat(export_format),
+            )
+            return {
+                "chunk_idx": chunk_idx,
+                "start_page": start_page,
+                "end_page": end_page,
+                "outputs": _encode_processed_outputs(
+                    _normalize_processed_outputs(processed_outputs)
+                ),
+                "etag": etag,
+            }
+
+        return loop.run_until_complete(aprocess_chunk())
+
+
+# -------------------------------------------------------------------
+# Task to combine chunk results
+# -------------------------------------------------------------------
+@shared_task(bind=True, base=CustomTask)
+def combine_processed_chunks(  # noqa: ANN201
+    self,  # noqa: ANN001, ARG001
+    chunk_results: list[dict[str, Any]],
+) -> dict[str, str]:
+    """Merge chunk outputs into a single base64-encoded map.
+
+    Tables are renumbered sequentially (table_1, table_2, ...).
+    Non-table values are concatenated with newlines, except 'json' keys
+    which are merged into a JSON array.
+    """
+
+    ordered_chunks = sorted(chunk_results, key=lambda result: int(result["chunk_idx"]))
+    table_payloads: list[bytes] = []
+    non_table_payloads: dict[str, list[bytes]] = {}
+
+    for chunk in ordered_chunks:
+        # It contains export_format and the content in bytes. e.g.
+        # decoded_outputs = {"markdown": b"...", "json": b"...", "table_1": b"...", "table_2": b"...", etc.}
+        decoded_outputs: dict[str, bytes] = _decode_processed_outputs(chunk["outputs"])
+
+        # Extract and sort table keys for this specific chunk
+        table_keys: list[str] = [
+            key for key in decoded_outputs if key.startswith("table_")
+        ]
+        table_payloads.extend(
+            [decoded_outputs[table_key] for table_key in _sort_table_keys(table_keys)]
+        )
+
+        for key, value in decoded_outputs.items():
+            if not key.startswith("table_"):
+                non_table_payloads.setdefault(key, []).append(value)
+
+    def _apply_merge(
+        table_payloads: list[bytes],
+        non_table_payloads: dict[str, list[bytes]],
+    ) -> dict[str, bytes]:
+        """Build the final merged output payload from grouped chunk data."""
+        merged_outputs: dict[str, bytes] = {}
+
+        for idx, table_bytes in enumerate(table_payloads, start=1):
+            merged_outputs[f"table_{idx}"] = table_bytes
+
+        for key, chunks in non_table_payloads.items():
+            if len(chunks) == 1:
+                merged_outputs[key] = chunks[0]
+            elif key == "json":
+                merged_json_items = [MSGSPEC_DECODER.decode(chunk) for chunk in chunks]
+                merged_outputs[key] = json_dumps(merged_json_items).encode("utf-8")
+            else:
+                merged_outputs[key] = b"\n".join(chunks)
+
+        return merged_outputs
+
+    return _encode_processed_outputs(_apply_merge(table_payloads, non_table_payloads))
+
+
+# -------------------------------------------------------------------
+# Main processing task
+# -------------------------------------------------------------------
+@shared_task(bind=True, base=CustomTask)
+def orchestrate_pdf_processing(
     self,  # noqa: ANN001
     etag: str,
     task_id: str,
     metadata: MetadataResult | None = None,
 ) -> ProcessDataTaskResult:
-    """Celery task to process data"""
+    """Orchestrate chunk processing with Celery chord and upload merged outputs."""
 
     processor = self.processor
     s3_service = self.s3_service
@@ -290,53 +648,37 @@ def process_data(
     )
 
     try:
-        # Check the page count from metadata if available
-        if metadata and metadata["page_count"] is not None:
+        # Validate file size from metadata if available (early-exit for oversized files)
+        if metadata and metadata["file_size_bytes"] is not None:
             metadata_copy = metadata.copy()
-
-            # Add metadata
-            page_count_value = metadata_copy["page_count"]
-            if isinstance(page_count_value, str):
-                page_count_int = int(page_count_value)
-            elif isinstance(page_count_value, int):
-                page_count_int = page_count_value
-            metadata_copy["page_count"] = page_count_int
             file_size_value = metadata_copy["file_size_bytes"]
             file_size_int = int(file_size_value) if file_size_value is not None else 0
             metadata_copy["file_size_bytes"] = file_size_int
-            # If page count exceeds limit or file size exceeds limit
-            metadata_copy["reason"] = (
-                DBUpdateReasonEnum.EXCEEDS_PAGE_LIMIT.value
-                if page_count_int > MAX_PAGES
-                else DBUpdateReasonEnum.EXCEEDS_SIZE_LIMIT.value
-            )
-
-            loop = _get_worker_event_loop()
-            early_termination_result = loop.run_until_complete(
-                avalidation_checks(
-                    etag=etag,
-                    task_id=task_id,
-                    metadata=metadata_copy,
-                    webhook_service=self.webhook_service,
-                    max_pages=MAX_PAGES,
+            if file_size_int > MAX_SIZE_BYTES:
+                metadata_copy["reason"] = DBUpdateReasonEnum.EXCEEDS_SIZE_LIMIT.value
+                early_termination_result = loop.run_until_complete(
+                    avalidation_checks(
+                        etag=etag,
+                        task_id=task_id,
+                        metadata=metadata_copy,
+                        webhook_service=self.webhook_service,
+                    )
                 )
-            )
-            # Page count exceeds limit
-            if early_termination_result:
-                uploaded_files = early_termination_result.get("uploaded_files", {})
-                completed_at = early_termination_result.get(
-                    "completed_at", pendulum.now("UTC").isoformat()
-                )
+                if early_termination_result:
+                    uploaded_files = early_termination_result.get("uploaded_files", {})
+                    completed_at = early_termination_result.get(
+                        "completed_at", pendulum.now("UTC").isoformat()
+                    )
 
-                return ProcessDataTaskResult(
-                    status=StatusTypeEnum.COMPLETED.value,
-                    success=True,
-                    task_id=task_id,
-                    completed_at=completed_at,
-                    file_result_url=uploaded_files,
-                )
+                    return ProcessDataTaskResult(
+                        status=StatusTypeEnum.COMPLETED.value,
+                        success=True,
+                        task_id=task_id,
+                        completed_at=completed_at,
+                        file_result_url=uploaded_files,
+                    )
 
-        # Else: If no page count metadata, proceed with processing but log a warning
+        # If page count metadata isn't present, continue but log for visibility
         logger.info(
             f"No page count metadata for task_id {task_id}. Proceeding with processing without "
             "page count check."
@@ -349,50 +691,20 @@ def process_data(
             uploads_dir.mkdir(parents=True, exist_ok=True)
             filepath: str = str(uploads_dir / f"{task_id}.pdf")
 
-            # Run all async operations in the same event loop
-            async def aprocess_and_update() -> dict[str, Any]:
-                """Combined async workflow: download, process, and update database."""
-
-                await s3_service.adownload_file_from_s3(
-                    filepath=filepath,
-                    task_id=task_id,
-                    file_extension=".pdf",
-                    operation="input",
-                )
-
-                # Process the file and upload results back to S3
-                uploaded_files: dict[
-                    str, Any
-                ] = await processor.aprocess_data_and_upload(
-                    source=filepath,
-                    s3_service=s3_service,
-                    task_id=task_id,
-                    export_format=ExportFormat.MARKDOWN,
-                )
-
-                # Update task metadata in database
-                task_metadata = metadata.copy() if metadata is not None else {}
-                task_metadata["reason"] = DBUpdateReasonEnum.PROCESSED.value
-                webhook_url = await aupdate_task_metadata(
-                    task_id,
-                    uploaded_files,
-                    status=StatusTypeEnum.COMPLETED,
-                    update_data={"_metadata": task_metadata},
-                )
-
-                return await asend_success_notification(
+            result: dict[str, Any] = loop.run_until_complete(
+                aprocess_and_update(
                     etag=etag,
                     task_id=task_id,
-                    uploaded_files=uploaded_files,
-                    webhook_url=webhook_url,
+                    filepath=filepath,
+                    metadata=metadata,
+                    processor=processor,
+                    s3_service=s3_service,
                     webhook_service=self.webhook_service,
-                    metadata=MetadataResult(**task_metadata),
+                    routing_options=_get_task_routing_options(self),
                 )
+            )
 
-            # Get the stable worker event loop
-            loop = _get_worker_event_loop()
-            result: dict[str, Any] = loop.run_until_complete(aprocess_and_update())
-
+        # Return the standard task result schema expected by callers
         return ProcessDataTaskResult(
             status=StatusTypeEnum.COMPLETED.value,
             success=True,
@@ -413,30 +725,15 @@ def process_data(
                 f"Terminal failure for task {task_id} after {self.max_retries} retries"
             )
 
-            async def aprocess_failure(error: Exception) -> None:
-                """Async workflow to update DB and send failure notification on terminal failure."""
-                webhook_url = await aupdate_task_metadata(
-                    task_id,
-                    uploaded_files={},
-                    status=StatusTypeEnum.FAILED,
-                    update_data={
-                        "_metadata": MetadataResult(
-                            reason=DBUpdateReasonEnum.PROCESSING_FAILED.value
-                        ),
-                        "error_message": str(error)[:1_000],
-                    },  # Truncate error message to prevent DB issues
-                )
-                await asend_failure_notification(
+            loop.run_until_complete(
+                aprocess_failure(
                     etag=etag,
                     task_id=task_id,
-                    webhook_url=webhook_url,
-                    error=error,
-                    webhook_service=self.webhook_service,
+                    uploaded_files={},
+                    exc=exc,
                     retries=self.request.retries,
+                    webhook_service=self.webhook_service,
                 )
-                return
-
-            loop = _get_worker_event_loop()
-            loop.run_until_complete(aprocess_failure(exc))
+            )
 
         raise self.retry(exc=exc) from exc

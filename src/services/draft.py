@@ -17,7 +17,7 @@ import pandas as pd
 from src import create_logger
 from src.celery_app.utils import get_document_converter
 from src.config import app_config
-from src.schemas.types import ExportFormat, PDFOutputResult
+from src.schemas.types import ExportFormat
 from src.services.storage import S3StorageService
 from src.utilities.utils import validate_pdf_file
 
@@ -247,30 +247,13 @@ class PDFProcessor:
             return etag, s3_url
         return None, None
 
-    @staticmethod
-    def _resolve_extension_for_key(output_key: str) -> str:
-        """Resolve the S3 file extension for a processed output key."""
-        if output_key.startswith("table_"):
-            return ".csv"
-
-        extension_map = {
-            "json": ".json",
-            "text": ".txt",
-            "markdown": ".md",
-            "doctags": ".doctags",
-        }
-        if output_key not in extension_map:
-            raise ValueError(f"Unsupported output key for upload: {output_key}")
-        return extension_map[output_key]
-
     async def aprocess_data(
         self,
         source: str | Path,
         task_id: str = "unknown",
         export_format: ExportFormat = ExportFormat.ALL,
-    ) -> PDFOutputResult:
-        """Extract content from PDF and return serialized bytes for each format."""
-
+    ) -> dict[str, str]:
+        """Extract content from PDF and return results in various formats."""
         # Validate PDF file before processing
         self._validate_pdf_file(source)
 
@@ -300,9 +283,8 @@ class PDFProcessor:
         self._download_easyocr_models()
 
         start_time: float = time.time()
-        output_dict: PDFOutputResult = PDFOutputResult(
-            doctags=None, json=None, markdown=None, tables={}, text=None
-        )
+
+        output_dict: dict[str, Any] = {}
         doc_converter = get_document_converter()
 
         # Try Docling first, fall back to PyMuPDF for browser PDFs
@@ -378,9 +360,15 @@ class PDFProcessor:
                 table_df: pd.DataFrame = table.export_to_dataframe(
                     doc=conv_result.document
                 )
+
+                print(f"## Table {table_ix}")
+                print(table_df.head(3).to_markdown())
+
                 buffer = io.BytesIO()
+                # Export the table DataFrame to CSV in-memory
                 table_df.to_csv(buffer, index=False)
-                output_dict["tables"][f"table_{table_ix + 1}"] = buffer.getvalue()
+
+            output_dict["tables"] = table_df
 
         # ----- JSON Export -----
         # Only available when using Docling (not fallback)
@@ -390,9 +378,11 @@ class PDFProcessor:
             and conv_result.document
             and export_format in [ExportFormat.ALL, ExportFormat.JSON]
         ):
-            output_dict["json"] = json.dumps(
-                conv_result.document.export_to_dict()
-            ).encode("utf-8")
+            json_bytes = json.dumps(conv_result.document.export_to_dict()).encode(
+                "utf-8"
+            )
+
+            output_dict["json"] = json_bytes
 
         # ----- Text Export -----
         if export_format in [ExportFormat.ALL, ExportFormat.TEXT]:
@@ -412,7 +402,10 @@ class PDFProcessor:
 
         # ----- Markdown Export -----
         if export_format in [ExportFormat.ALL, ExportFormat.MARKDOWN]:
-            output_dict["markdown"] = markdown_content.encode("utf-8")
+            # Use markdown_content which is already set (from Docling or fallback)
+            md_bytes = markdown_content.encode("utf-8")
+
+            output_dict["markdown"] = md_bytes
 
         # ----- Document Tags Export -----
         # Only available when using Docling (not fallback)
@@ -422,25 +415,25 @@ class PDFProcessor:
             and conv_result.document
             and export_format in [ExportFormat.ALL, ExportFormat.DOCUMENT_TAGS]
         ):
-            output_dict["doctags"] = conv_result.document.export_to_doctags().encode(
-                "utf-8"
-            )
+            tags_bytes = conv_result.document.export_to_doctags().encode("utf-8")
+
+            output_dict["doctags"] = tags_bytes
 
         end_time = time.time() - start_time
         logger.info(
-            f"Document converted and formats serialized in {end_time:.2f} seconds."
+            f"Document converted and tables exported in {end_time:.2f} seconds."
         )
 
         return output_dict
 
-    async def aupload(
+    async def aprocess_data_and_upload(
         self,
+        source: str | Path,
         s3_service: S3StorageService,
-        processed_outputs: dict[str, bytes],
         task_id: str = "unknown",
-        correlation_id: str = "",
+        export_format: ExportFormat = ExportFormat.ALL,
     ) -> dict[str, str]:
-        """Upload already-processed outputs to S3.
+        """Main function to convert a PDF document using Docling and export results and upload them to S3.
 
         Returns
         -------
@@ -448,22 +441,233 @@ class PDFProcessor:
             Dictionary mapping export format names to their S3 URLs for download.
             Example: {'markdown': 's3://bucket/uploads/task-id/output/task-id.md'}
         """
+
+        # Validate PDF file before processing
+        self._validate_pdf_file(source)
+
+        # Inspect PDF for debugging
+        pdf_info: dict[str, Any] = self._inspect_pdf(source)
+
+        # Store original source path before any modifications
+        original_source = Path(source)
+
+        # Check if this is a browser-generated PDF that needs fixing
+        is_browser_pdf: bool = "Skia" in pdf_info.get(
+            "producer", ""
+        ) or "Chrome" in pdf_info.get("creator", "")
+        fixed_pdf_path = None
+
+        if is_browser_pdf:
+            logger.warning(
+                "Detected browser-generated PDF - applying compatibility fix for Docling..."
+            )
+            try:
+                fixed_pdf_path = self._fix_browser_pdf(source)
+                source = fixed_pdf_path  # Use the fixed PDF for processing
+            except Exception as e:
+                logger.error(f"Failed to fix browser PDF, will try original: {e}")
+
+        # Download models once
+        self._download_easyocr_models()
+
+        start_time: float = time.time()
+        doc_converter = get_document_converter()
+
+        # Try Docling first, fall back to PyMuPDF for browser PDFs
+        use_fallback: bool = False
+        conv_result = None
+
+        try:
+            logger.info(
+                f"Converting PDF (pages={pdf_info.get('num_pages')}, has_text={pdf_info.get('has_text')})"
+            )
+            conv_result = doc_converter.convert(
+                source,
+                max_num_pages=MAX_NUM_PAGES,
+                max_file_size=MAX_FILE_SIZE_BYTES,
+                raises_on_error=True,  # Raise errors instead of silently failing
+            )
+        except Exception as e:
+            if is_browser_pdf:
+                logger.warning(
+                    "Docling failed on browser PDF (expected). Using PyMuPDF fallback extraction."
+                )
+                use_fallback = True
+            else:
+                logger.error(
+                    f"Failed to convert document {task_id}: {e}\n"
+                    f"PDF Info: {pdf_info}\n"
+                    f"This may be due to: browser-generated PDF structure, "
+                    "encryption, or unsupported PDF features",
+                    exc_info=True,
+                )
+                raise
+        finally:
+            # Clean up temporary fixed PDF if created
+            if fixed_pdf_path and fixed_pdf_path.exists():
+                try:
+                    fixed_pdf_path.unlink()
+                    logger.info("Cleaned up temporary fixed PDF")
+                except Exception:  # noqa: S110
+                    pass
+
+        # Use fallback extraction if Docling failed on browser PDF
+        if use_fallback:
+            # Use the original source path we stored earlier (before fixing)
+            fallback_content = self._extract_with_pymupdf(original_source)
+            markdown_content = fallback_content.get("markdown", "")
+            logger.info(
+                "Using PyMuPDF fallback - only text/markdown export available (no tables, JSON, or doctags)"
+            )
+        else:
+            # Check if document has content
+            if conv_result and conv_result.document:
+                markdown_content = conv_result.document.export_to_markdown()
+                if not markdown_content:
+                    logger.warning(
+                        f"Document {task_id} has no extractable content. "
+                        f"OCR enabled: {PERFORM_OCR}, GPU enabled: {USE_GPU}"
+                    )
+            else:
+                markdown_content = ""
+                logger.warning(f"Document {task_id} conversion resulted in no document")
+
+        logger.info(f"Converting results to the format: '{export_format.value}'")
+
+        # Track all uploaded URLs for returning to user
         uploaded_urls: dict[str, str] = {}
 
-        for output_key, output_bytes in processed_outputs.items():
-            file_extension = self._resolve_extension_for_key(output_key)
+        # ----- Table Export -----
+        # Only available when using Docling (not fallback)
+        if (
+            not use_fallback
+            and conv_result
+            and conv_result.document
+            and export_format in [ExportFormat.ALL, ExportFormat.TABLE]
+        ):
+            for table_ix, table in enumerate(conv_result.document.tables):
+                table_df: pd.DataFrame = table.export_to_dataframe(
+                    doc=conv_result.document
+                )
+
+                print(f"## Table {table_ix}")
+                print(table_df.head(3).to_markdown())
+
+                buffer = io.BytesIO()
+                # Export the table DataFrame to CSV in-memory
+                table_df.to_csv(buffer, index=False)
+
+                etag, s3_url = await self._aupload_bytes(
+                    s3_service,
+                    buffer.getvalue(),
+                    task_id=f"{task_id}-table-{table_ix + 1}",
+                    correlation_id="",
+                    file_extension=".csv",
+                )
+                if s3_url:
+                    uploaded_urls[f"table_{table_ix + 1}"] = s3_url
+
+            if etag:
+                logger.info(f"Uploaded table with etag={etag}")
+
+        # ----- JSON Export -----
+        # Only available when using Docling (not fallback)
+        if (
+            not use_fallback
+            and conv_result
+            and conv_result.document
+            and export_format in [ExportFormat.ALL, ExportFormat.JSON]
+        ):
+            json_bytes = json.dumps(conv_result.document.export_to_dict()).encode(
+                "utf-8"
+            )
+
             etag, s3_url = await self._aupload_bytes(
                 s3_service,
-                output_bytes,
-                task_id=f"{task_id}-{output_key}",
-                correlation_id=correlation_id,
-                file_extension=file_extension,
+                json_bytes,
+                task_id=f"{task_id}-document-json",
+                correlation_id="",
+                file_extension=".json",
             )
             if s3_url:
-                uploaded_urls[output_key] = s3_url
-            if etag:
-                logger.info(f"Uploaded {output_key} with etag={etag}")
+                uploaded_urls["json"] = s3_url
 
+            if etag:
+                logger.info(f"Uploaded JSON with etag={etag}")
+
+        # ----- Text Export -----
+        if export_format in [ExportFormat.ALL, ExportFormat.TEXT]:
+            # Use markdown_content which is already set (from Docling or fallback)
+            if use_fallback:
+                text_bytes = markdown_content.encode("utf-8")
+            else:
+                text_bytes = (
+                    conv_result.document.export_to_markdown(strict_text=True).encode(
+                        "utf-8"
+                    )
+                    if conv_result and conv_result.document
+                    else markdown_content.encode("utf-8")
+                )
+
+            etag, s3_url = await self._aupload_bytes(
+                s3_service,
+                text_bytes,
+                task_id=f"{task_id}-document-text",
+                correlation_id="",
+                file_extension=".txt",
+            )
+            if s3_url:
+                uploaded_urls["text"] = s3_url
+
+            if etag:
+                logger.info(f"Uploaded text with etag={etag}")
+
+        # ----- Markdown Export -----
+        if export_format in [ExportFormat.ALL, ExportFormat.MARKDOWN]:
+            # Use markdown_content which is already set (from Docling or fallback)
+            md_bytes = markdown_content.encode("utf-8")
+
+            etag, s3_url = await self._aupload_bytes(
+                s3_service,
+                md_bytes,
+                task_id=f"{task_id}-document-md",
+                correlation_id="",
+                file_extension=".md",
+            )
+            if s3_url:
+                uploaded_urls["markdown"] = s3_url
+
+            if etag:
+                logger.info(f"Uploaded markdown with etag={etag}")
+
+        # ----- Document Tags Export -----
+        # Only available when using Docling (not fallback)
+        if (
+            not use_fallback
+            and conv_result
+            and conv_result.document
+            and export_format in [ExportFormat.ALL, ExportFormat.DOCUMENT_TAGS]
+        ):
+            tags_bytes = conv_result.document.export_to_doctags().encode("utf-8")
+
+            etag, s3_url = await self._aupload_bytes(
+                s3_service,
+                tags_bytes,
+                task_id=f"{task_id}-document-doctags",
+                correlation_id="",
+                file_extension=".doctags",
+            )
+            if s3_url:
+                uploaded_urls["doctags"] = s3_url
+
+            if etag:
+                logger.info(f"Uploaded doctags with etag={etag}")
+
+        end_time = time.time() - start_time
+
+        logger.info(
+            f"Document converted and tables exported in {end_time:.2f} seconds."
+        )
         logger.info(f"Uploaded URLs: {uploaded_urls}")
 
         return uploaded_urls

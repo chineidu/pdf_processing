@@ -1,3 +1,5 @@
+"""Routes for managing PDF processing tasks, including status retrieval and upload confirmation."""
+
 from fastapi import APIRouter, Depends, status
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -28,6 +30,7 @@ def _to_task_status_response(
         file_type=MimeTypeEnum(task.file_type)
         if isinstance(task.file_type, str)
         else task.file_type,
+        file_page_count=task.file_page_count,
         file_size_bytes=task.file_size_bytes,
         created_at=task.created_at,
         updated_at=task.updated_at,
@@ -81,20 +84,40 @@ async def confirm_task_uploaded(
         raise HTTPError(details="Task not found", status_code=status.HTTP_404_NOT_FOUND)
 
     current_status = task.status.value if hasattr(task.status, "value") else task.status
-    if current_status == StatusTypeEnum.PENDING.value:
-        update_data = {
-            "status": StatusTypeEnum.UPLOADED.value,
-            "file_size_bytes": payload.file_size_bytes,
-        }
-        if payload.file_type is not None:
-            update_data["file_type"] = payload.file_type
-        if payload.file_page_count is not None:
+    terminal_statuses = {
+        StatusTypeEnum.COMPLETED.value,
+        StatusTypeEnum.FAILED.value,
+        StatusTypeEnum.SKIPPED.value,
+        StatusTypeEnum.UNPROCESSABLE.value,
+    }
+
+    if current_status not in terminal_statuses:
+        update_data: dict[str, object] = {}
+
+        # Move fresh tasks to UPLOADED, but still allow metadata enrichment for
+        # non-terminal tasks (VALIDATING/PROCESSING) to avoid race-condition data loss.
+        if current_status == StatusTypeEnum.PENDING.value:
+            update_data["status"] = StatusTypeEnum.UPLOADED.value
+
+        current_size = task.file_size_bytes
+        if payload.file_size_bytes > 0 and (current_size is None or current_size <= 0):
+            update_data["file_size_bytes"] = payload.file_size_bytes
+
+        current_page_count = task.file_page_count
+        if payload.file_page_count is not None and (
+            current_page_count is None or current_page_count <= 0
+        ):
             update_data["file_page_count"] = payload.file_page_count
-        if payload.etag:
+
+        if payload.file_type is not None and task.file_type is None:
+            update_data["file_type"] = payload.file_type
+
+        if payload.etag and not task.etag:
             update_data["etag"] = payload.etag
 
-        await task_repo.aupdate_task(task_id=task_id, update_data=update_data)
-        task = await task_repo.aget_task_by_task_id(task_id)
+        if update_data:
+            await task_repo.aupdate_task(task_id=task_id, update_data=update_data)
+            task = await task_repo.aget_task_by_task_id(task_id)
 
     if task is None:
         raise HTTPError(

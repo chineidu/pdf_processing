@@ -213,7 +213,7 @@ async def _await_and_recheck_inflight(
             )
             return True
 
-        # Task still in-flight; dis
+        # Task still in-flight; dispatch (safety net)
         if updated_task.status not in {
             StatusTypeEnum.PROCESSING.value,
             StatusTypeEnum.VALIDATING.value,
@@ -302,7 +302,7 @@ def dispatch_to_celery_process_data_task(
         The priority level (1-10, where 10 is highest), by default 5
     """
     celery_app.send_task(
-        "src.celery_app.tasks.processor.process_data",
+        "src.celery_app.tasks.processor.orchestrate_pdf_processing",
         kwargs={
             "task_id": task_id,
             "etag": etag,
@@ -338,6 +338,7 @@ async def aprocess_pdf_documents(
         for record in payload.records:
             etag: str = record.storage_entity.object.etag.replace('"', "").strip()
             storage_key: str = record.storage_entity.object.key
+            object_size_bytes: int | None = record.storage_entity.object.size
             derived_task_id: str | None = (
                 _extract_task_id_from_storage_key(storage_key) or task_id
             )
@@ -484,10 +485,18 @@ async def aprocess_pdf_documents(
                     num_pages = idempotent_task.file_page_count or DEFAULT_NUM_PAGES
                     file_size_bytes = idempotent_task.file_size_bytes
 
+                    # If file size is missing from DB, fall back to S3 metadata if available
+                    if (
+                        (file_size_bytes is None or file_size_bytes <= 0)
+                        and object_size_bytes is not None
+                        and object_size_bytes > 0
+                    ):
+                        file_size_bytes = object_size_bytes
+
                     try:
                         queue_info = get_queue_and_priority(num_pages)
                         metadata: dict[str, Any] = {"page_count": num_pages}
-                        if file_size_bytes is not None:
+                        if file_size_bytes is not None and file_size_bytes > 0:
                             metadata["file_size_bytes"] = file_size_bytes
 
                         await asyncio.to_thread(
@@ -518,10 +527,18 @@ async def aprocess_pdf_documents(
                 )
                 num_pages = idempotent_task.file_page_count or DEFAULT_NUM_PAGES
                 file_size_bytes = idempotent_task.file_size_bytes
+
+                # If file size is missing from DB, fall back to S3 metadata if available
+                if (
+                    (file_size_bytes is None or file_size_bytes <= 0)
+                    and object_size_bytes is not None
+                    and object_size_bytes > 0
+                ):
+                    file_size_bytes = object_size_bytes
                 try:
                     queue_info = get_queue_and_priority(num_pages)
                     safety_metadata: dict[str, Any] = {"page_count": num_pages}
-                    if file_size_bytes is not None:
+                    if file_size_bytes is not None and file_size_bytes > 0:
                         safety_metadata["file_size_bytes"] = file_size_bytes
                     await asyncio.to_thread(
                         dispatch_to_celery_process_data_task,
@@ -576,7 +593,15 @@ async def aprocess_pdf_documents(
 
                     metadata["page_count"] = num_pages
 
-                    if file_size_bytes is None:
+                    # If file size is missing from DB, fall back to S3 metadata if available
+                    if (
+                        (file_size_bytes is None or file_size_bytes <= 0)
+                        and object_size_bytes is not None
+                        and object_size_bytes > 0
+                    ):
+                        file_size_bytes = object_size_bytes
+
+                    if file_size_bytes is None or file_size_bytes <= 0:
                         logger.warning(
                             f"Missing file size for task_id={derived_task_id}. "
                             f"Falling back to default file size: {DEFAULT_FILE_SIZE}."

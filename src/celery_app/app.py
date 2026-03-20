@@ -6,10 +6,14 @@ from kombu import Queue
 
 from src.config import app_config, app_settings
 
+MAX_QUEUE_PRIORITY = 10
+
 
 def create_celery_app() -> Celery:
     """Create and configure a Celery application instance."""
     celery = Celery("ner_tasks")
+
+    priority_queue_arguments = {"x-max-priority": MAX_QUEUE_PRIORITY}
 
     # Define priority queues for RabbitMQ
     task_queues = (
@@ -17,24 +21,33 @@ def create_celery_app() -> Celery:
         Queue(
             app_config.queue_config.high_priority_ml,
             routing_key=app_config.queue_config.high_priority_ml,
+            queue_arguments=priority_queue_arguments,
         ),
         Queue(
             app_config.queue_config.medium_priority_ml,
             routing_key=app_config.queue_config.medium_priority_ml,
+            queue_arguments=priority_queue_arguments,
         ),
         Queue(
             app_config.queue_config.low_priority_ml,
             routing_key=app_config.queue_config.low_priority_ml,
+            queue_arguments=priority_queue_arguments,
         ),
         # Default queues
-        Queue("celery", routing_key="celery"),  # default celery queue
+        Queue(
+            "celery",
+            routing_key="celery",
+            queue_arguments=priority_queue_arguments,
+        ),  # default celery queue
         Queue(
             app_config.queue_config.cleanups,
             routing_key=app_config.queue_config.cleanups,
+            queue_arguments=priority_queue_arguments,
         ),
         Queue(
             app_config.queue_config.notifications,
             routing_key=app_config.queue_config.notifications,
+            queue_arguments=priority_queue_arguments,
         ),
     )
 

@@ -87,6 +87,13 @@ class PDFProcessingConfig:
             "description": "Maximum number of pages to process in a PDF document."
         },
     )
+    chunk_size: int = field(
+        default=5,
+        metadata={
+            "description": "Number of pages per chunk for processing. "
+            "Adjust based on memory constraints and typical document size."
+        },
+    )
     max_file_size_bytes: int = field(
         default=10 * 1024 * 1024,  # 10 MB
         metadata={"description": "Maximum file size in bytes for PDF processing."},

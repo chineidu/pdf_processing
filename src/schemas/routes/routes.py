@@ -35,6 +35,10 @@ class TaskStatusResponse(BaseSchema):
     file_type: MimeTypeEnum | None = Field(
         description="MIME type of the uploaded file."
     )
+    file_page_count: int | None = Field(
+        default=None,
+        description="Number of pages in the uploaded PDF file (if applicable).",
+    )
     file_size_bytes: int = Field(description="Size of the uploaded file in bytes.")
     created_at: datetime | None = Field(description="Task creation timestamp.")
     updated_at: datetime | None = Field(description="Task last update timestamp.")

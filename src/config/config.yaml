@@ -28,6 +28,7 @@ config:
 
   pdf_processing_config:
     max_num_pages: 550
+    chunk_size: 20 # Number of pages per chunk for processing
     max_file_size_bytes: 36700160 # 35*1024*1024 # 35MB
     perform_ocr: true
     use_gpu: true

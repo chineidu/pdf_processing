@@ -100,11 +100,15 @@ class StatusTypeEnum(StrEnum):
 
 IDEMPOTENCY_ACTIVE_STATUSES: Final = frozenset(
     [
-        # --- In-Flight States (Prevent Race Conditions) ---
+        # --------------------------------------------------------------------
+        # --- In-Flight States (Prevent Race Conditions) ---------------------
+        # --------------------------------------------------------------------
         StatusTypeEnum.UPLOADED.value,
         StatusTypeEnum.VALIDATING.value,
         StatusTypeEnum.PROCESSING.value,
-        # --- Deterministic Terminal States (Prevent Wasted Compute) ---
+        # --------------------------------------------------------------------
+        # --- Deterministic Terminal States (Prevent Wasted Compute) ---------
+        # --------------------------------------------------------------------
         StatusTypeEnum.COMPLETED.value,
         StatusTypeEnum.SKIPPED.value,
         StatusTypeEnum.UNPROCESSABLE.value,
@@ -234,3 +238,14 @@ class PriorityEnum(StrEnum):
     LOW = "low"
     MEDIUM = "medium"
     HIGH = "high"
+
+
+PDFOutputValue = bytes | str | None
+
+
+class PDFOutputResult(TypedDict):
+    doctags: PDFOutputValue
+    json: PDFOutputValue
+    markdown: PDFOutputValue
+    tables: dict[str, PDFOutputValue]  # keys like "table_1", "table_2", ...
+    text: PDFOutputValue

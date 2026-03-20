@@ -1,102 +1,158 @@
-# pdf_processing
+# PDF Processing
 
-PDF processing service with an API, background workers, and storage-backed ingestion.
+High-performance PDF processing service featuring a FastAPI backend, asynchronous Celery workers, and automated ingestion from S3-compatible storage.
+
+## Features
+
+- **Asynchronous PDF Processing**: Deep extraction of text, tables, and metadata using `Docling`, `PyMuPDF`, and `OCR` (`easyocr`).
+- **Distributed Task Management**: Scalable task processing with **Celery** across multiple priority queues (High, Medium, Low).
+- **Web UI & API**: Modern **FastAPI** backend with a server-rendered (Jinja2) Web UI for user login and interactive file uploads.
+- **S3-Compatible Storage**: Built-in integration with **MinIO** for managing uploads and processing artifacts using presigned URLs.
+- **Event-Driven Ingestion**: Automated background processing triggered by storage events via a dedicated **Storage Worker**.
+- **Webhooks**: Integrated **Webhook Server** for delivering real-time processing updates and task completion notifications to external services.
+- **Observability**: Real-time metrics via **Prometheus** and distributed tracing with **OpenTelemetry/Jaeger**.
+- **Security & Reliability**: JWT authentication, rate limiting (Guest/Free/Pro tiers), and circuit breaker patterns for resilient service communication.
 
 ## Table of contents
 
-- [Overview](#overview)
+- [Features](#features)
 - [Technologies used](#technologies-used)
 - [Quick start](#quick-start)
-- [Running the code](#running-the-code)
-- [Data flow (architecture)](#data-flow-architecture)
-- [Code style guidelines](#code-style-guidelines)
+- [Running the application](#running-the-application)
+- [Configuration](#configuration)
+- [Observability & Monitoring](#observability--monitoring)
+- [Development](#development)
 - [Repository layout](#repository-layout)
-
-## Overview
-
-This project exposes a FastAPI service for uploads and task orchestration, then uses Celery workers to process PDFs and persist results. The local development stack includes PostgreSQL, RabbitMQ, Redis, and MinIO, plus Jaeger for tracing.
 
 ## Technologies used
 
-Application and API:
+**Backend & API:**
 
-- fastapi
-- pydantic-settings
-- msgspec
-- omegaconf
+- FastAPI (REST endpoints & Jinja2 UI)
+- SQLAlchemy 2.0 (Async) & PostgreSQL
+- Pydantic Settings & OmegaConf
 
-Async, workers, and messaging:
+**Tasks & Messaging:**
 
-- celery
-- aio-pika
+- Celery (Task orchestration)
+- RabbitMQ (Message broker)
+- Redis (Caching & Rate limiting)
 
-Storage and databases:
+**PDF, OCR & AI:**
 
-- boto3
-- sqlalchemy
-- asyncpg
-- psycopg-binary
-- redis
-- aioredis
-- aiocache
+- Docling (Document layout & structure)
+- EasyOCR (Optical character recognition)
+- PyMuPDF (PDF manipulation)
 
-PDF and OCR:
+**Observability:**
 
-- docling
-- easyocr
-- python-magic
+- OpenTelemetry (Tracing)
+- Prometheus (Metrics)
+- Jaeger (Trace visualization)
 
-Auth and security:
+**Dev Tooling:**
 
-- passlib
-- python-jose
-
-Observability:
-
-- opentelemetry-api
-- opentelemetry-sdk
-- opentelemetry-exporter-otlp-proto-grpc
-- opentelemetry-instrumentation-fastapi
-- opentelemetry-instrumentation-httpx
-- opentelemetry-instrumentation-redis
-- opentelemetry-instrumentation-sqlalchemy
-- prometheus-client
-- prometheus-fastapi-instrumentator
-
-Dev tooling:
-
-- ruff
-- pyrefly
-- ty
-- prek
+- [uv](https://github.com/astral-sh/uv) (Extremely fast Python package manager)
+- Docker & Docker Compose
+- Ruff (Linting & Formatting)
 
 ## Quick start
 
-1. Install dependencies:
+### Prerequisites
+
+- Docker & Docker Compose
+- [uv](https://docs.astral.sh/uv/getting-started/installation/) installed
+
+### Initial Setup
+
+1. **Clone and install dependencies**:
 
    ```sh
    make install
    ```
 
-1. Start local services (Postgres, RabbitMQ, Redis, MinIO, Jaeger):
+2. **Configure environment**:
+
+   ```sh
+   cp .env.example .env  # Edit .env with your credentials
+   ```
+
+3. **Initialize infrastructure**:
+
+   ```sh
+   make setup  # Starts Docker services and initializes databases/MinIO
+   ```
+
+## Running the application
+
+To run a fully functional development environment, you should start the following components in separate terminals:
+
+1. **Start all Docker infrastructure**:
 
    ```sh
    make up
    ```
 
-1. Run the API and worker in separate terminals:
+2. **Run the API (Terminal 1)**:
+
+   ```sh
+   make api-run
+   # UI: http://localhost:8000
+   # API Docs: http://localhost:8000/docs
+   ```
+
+3. **Run the PDF Processing Worker (Terminal 2)**:
+   This worker handles the main PDF extraction and OCR tasks.
+
+   ```sh
+   make worker-run
+   ```
+
+4. **Run the Storage Worker (Terminal 3)**:
+   Detects new files in MinIO and automatically queues them for ingestion.
+
+   ```sh
+   make storage-worker-run
+   ```
+
+5. **Run the Webhook Server (Optional - Terminal 4)**:
+   Listens for and dispatches notifications to external services.
+
+   ```sh
+   uv run webhook_server.py
+   ```
+
+## Configuration
+
+The application is configured through:
+
+- `src/config/config.yaml`: Core application settings (file limits, rate limits, UI settings).
+- `.env`: Sensitive secrets like DB passwords, MinIO keys, and JWT secrets.
+
+## Observability & Monitoring
+
+The service includes comprehensive monitoring out of the box:
+
+- **Metrics**: Available at `http://localhost:8000/metrics` (Prometheus format).
+- **Tracing**: Visualized via Jaeger at `http://localhost:16686` when `make up` is running.
+- **Health Checks**: `http://localhost:8000/api/v1/health`.
+
+## Development
+
+**Running Tests:**
 
 ```sh
-make api-run
+make test
 ```
+
+**Linting & Formatting:**
 
 ```sh
-make worker-run
+make lint
+make format
 ```
 
-## Running the code
-
-Local services:
+## Repository layout
 
 - `make up` - start the stack
 - `make down` - stop the stack
