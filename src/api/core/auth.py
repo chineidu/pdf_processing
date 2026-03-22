@@ -17,7 +17,7 @@ from src.api.core.dependencies import get_cache
 from src.api.core.exceptions import HTTPError
 from src.config import app_config, app_settings
 from src.db.models import DBUser, aget_db
-from src.db.repositories.api_repository import APIKeyRepository
+from src.db.repositories.apikey_repository import APIKeyRepository
 from src.db.repositories.user_repository import UserRepository
 from src.schemas.db.models import (
     APIKeySchema,
@@ -278,7 +278,7 @@ async def get_current_api_key(
     key_prefix = api_key[:prefix_length]
 
     api_key_repo = APIKeyRepository(db)
-    db_api_key = await api_key_repo.aget_api_key_by_prefix(key_prefix=key_prefix)
+    db_api_key = await api_key_repo.aget_apikey_by_prefix(key_prefix=key_prefix)
     db_user = db_api_key.user if db_api_key else None
 
     # Validate the API key and associated user

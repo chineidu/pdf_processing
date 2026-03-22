@@ -28,21 +28,103 @@ class APIKeyRepository:
     def __init__(self, db: AsyncSession) -> None:
         self.db = db
 
+    # ----- Rotation operations -----
+    async def arotate_apikey(
+        self,
+        key_id: int,
+        user_id: int,
+        new_key_obj: "APIKeySchema",
+        grace_period_minutes: int = 60,
+    ) -> tuple["DBAPIKey", int] | None:
+        """Atomically rotate an API key.
+
+        Acquires a row-level lock on the old key, sets its expiry to
+        ``now + grace_period_minutes`` (or deactivates it immediately when
+        ``grace_period_minutes == 0``), then inserts the new key — all in
+        one database transaction.
+
+        Parameters
+        ----------
+        key_id : int
+            ID of the key to rotate.
+        user_id : int
+            Owner ID — prevents rotating another user's key.
+        new_key_obj : APIKeySchema
+            Pre-built schema for the replacement key.
+        grace_period_minutes : int
+            How long the old key remains usable after rotation.
+            Pass 0 to revoke it immediately.
+
+        Returns
+        -------
+        tuple[DBAPIKey, int] | None
+            ``(new_db_key, new_key_id)`` on success, ``None`` if the key
+            was not found or does not belong to the user.
+
+        Raises
+        ------
+        ValueError
+            If the key is already inactive.
+        """
+        from datetime import timedelta, timezone
+
+        stmt = (
+            select(DBAPIKey)
+            .where(DBAPIKey.id == key_id, DBAPIKey.user_id == user_id)
+            .with_for_update()
+        )
+        result = await self.db.execute(stmt)
+        old_key: DBAPIKey | None = result.scalar_one_or_none()
+
+        if not old_key:
+            logger.warning(f"API Key {key_id} not found for user {user_id}")
+            return None
+
+        if not old_key.is_active:
+            raise ValueError("Cannot rotate an inactive API key.")
+
+        now = datetime.now(timezone.utc)
+        if grace_period_minutes > 0:
+            old_key.expires_at = now + timedelta(minutes=grace_period_minutes)
+        else:
+            old_key.is_active = False
+            old_key.expires_at = now
+
+        data = new_key_obj.model_dump(exclude={"id", "created_at", "last_used_at"})
+        new_db_key = DBAPIKey(**data)
+
+        try:
+            self.db.add(new_db_key)
+            await self.db.commit()
+            await self.db.refresh(new_db_key)
+            logger.info(
+                f"Rotated API Key {key_id} for user {user_id}. New key id: {new_db_key.id}"
+            )
+            return new_db_key, new_db_key.id
+        except IntegrityError as e:
+            logger.error(f"Integrity error rotating API Key {key_id}: {e}")
+            await self.db.rollback()
+            raise
+        except Exception as e:
+            logger.error(f"Error rotating API Key {key_id}: {e}")
+            await self.db.rollback()
+            raise
+
     # ----- Read operations -----
-    async def aget_api_key_by_id(self, id: int) -> DBAPIKey | None:
+    async def aget_apikey_by_id(self, key_id: int) -> DBAPIKey | None:
         """Get a api_key by its ID with eager loading of user and roles."""
         try:
             stmt = (
                 select(DBAPIKey)
-                .where(DBAPIKey.id == id)
+                .where(DBAPIKey.id == key_id)
                 .options(selectinload(DBAPIKey.user).selectinload(DBUser.roles))
             )
             return await self.db.scalar(stmt)
         except Exception as e:
-            logger.error(f"Error fetching api_key by id '{id}': {e}")
+            logger.error(f"Error fetching api_key by id '{key_id}': {e}")
             return None
 
-    async def aget_api_key_by_prefix(self, key_prefix: str) -> DBAPIKey | None:
+    async def aget_apikey_by_prefix(self, key_prefix: str) -> DBAPIKey | None:
         """Get a api_key by its key prefix with eager loading of user and roles."""
         try:
             stmt = (
@@ -56,7 +138,7 @@ class APIKeyRepository:
             logger.error(f"Error fetching api_key by key prefix '{key_prefix}': {e}")
             return None
 
-    async def aget_api_key_by_creation_time(
+    async def aget_apikey_by_creation_time(
         self, user_id: int, created_after: str, created_before: str
     ) -> list[DBAPIKey]:
         """Get api_key created within a specific time range. Uses database-level comparison.
@@ -92,7 +174,7 @@ class APIKeyRepository:
         result = await self.db.scalars(stmt)
         return list(result.all())
 
-    async def aget_api_key_by_last_used_time(
+    async def aget_apikey_by_last_used_time(
         self, user_id: int, last_used_after: str, last_used_before: str
     ) -> list[DBAPIKey]:
         """Get api_key last used within a certain time period. Uses database-level comparison.
@@ -128,7 +210,7 @@ class APIKeyRepository:
         result = await self.db.scalars(stmt)
         return list(result.all())
 
-    async def aget_keys_by_owner(self, owner_id: int) -> list[DBAPIKey]:
+    async def aget_apikeys_by_owner(self, owner_id: int) -> list[DBAPIKey]:
         """Get all API keys belonging to a user."""
         try:
             stmt = (
@@ -143,7 +225,7 @@ class APIKeyRepository:
             return []
 
     # ----- Create operations -----
-    async def acreate_api_key(self, api_key_obj: APIKeySchema) -> int:
+    async def acreate_apikey(self, api_key_obj: APIKeySchema) -> int:
         """Create api_key in the database."""
         try:
             data = api_key_obj.model_dump(exclude={"id", "created_at", "last_used_at"})
@@ -174,7 +256,7 @@ class APIKeyRepository:
             raise e
 
     # ----- Update operations -----
-    async def aupdate_api_key(
+    async def aupdate_apikey(
         self, key_id: int, user_id: int, update_data: dict[str, Any]
     ) -> DBAPIKey | None:
         """Update a api_key in the database in a single round trip.
@@ -231,7 +313,7 @@ class APIKeyRepository:
             raise
 
     # ----- Delete operations -----
-    async def adelete_owned_key(self, key_id: int, owner_id: int) -> bool:
+    async def adelete_owned_apikey(self, key_id: int, owner_id: int) -> bool:
         """
         Delete a key only if it belongs to the specific user.
         Returns True if deleted, False if not found/not owned.

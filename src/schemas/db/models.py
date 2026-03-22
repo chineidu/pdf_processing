@@ -129,6 +129,9 @@ class APIKeySchema(APIUpdateSchema):
 
     user_id: int | None = Field(description="ID of the user owning the API key.")
     key_prefix: str = Field(description="Prefix of the API key.")
+    full_key_truncated: str = Field(
+        description="Truncated portion of the full API key for display purposes."
+    )
     key_hash: str = Field(description="Hashed value of the API key.")
     scopes: list[APIKeyScopeEnum] = Field(
         default_factory=list,
@@ -145,6 +148,12 @@ class APIKeySchema(APIUpdateSchema):
     last_used_at: datetime | None = Field(
         default=None, description="Last used date and time of the API key."
     )
+
+    @field_validator("full_key_truncated", mode="after")
+    @classmethod
+    def truncate_full_key(cls, v: str) -> str:
+        """Truncate the full API key to show only the first 9 characters for display."""
+        return v[:9] + "***" if v else "value not provided"
 
 
 class RoleSchema(BaseSchema):

@@ -122,6 +122,7 @@ class DBAPIKey(Base):
     # Foreign key to DBUser.id, unique=False to allow multiple keys per user
     user_id: Mapped[int] = mapped_column(ForeignKey("users.id"), nullable=False)
     key_prefix: Mapped[str] = mapped_column(String(10), nullable=False)
+    full_key_truncated: Mapped[str] = mapped_column(String(20), nullable=False)
     key_hash: Mapped[str] = mapped_column(String(255), nullable=False)
     name: Mapped[str] = mapped_column(String(255), nullable=False)
 

@@ -137,7 +137,7 @@ The service includes comprehensive monitoring out of the box:
 - **Tracing**: Visualized via Jaeger at `http://localhost:16686` when `make up` is running.
 - **Health Checks**: `http://localhost:8000/api/v1/health`.
 
-## Development
+## Make Commands
 
 **Running Tests:**
 
@@ -152,7 +152,7 @@ make lint
 make format
 ```
 
-## Repository layout
+**Docker Compose:**
 
 - `make up` - start the stack
 - `make down` - stop the stack
@@ -161,7 +161,7 @@ make format
 - `make status` - show container status
 - `make health-check` - check service health
 
-App processes:
+**App processes:**
 
 - `make api-run` - start FastAPI with Uvicorn
 - `make api-run-gunicorn` - start FastAPI with Gunicorn
