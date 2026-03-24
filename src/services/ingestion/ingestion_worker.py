@@ -8,6 +8,7 @@ from pathlib import PurePosixPath
 from typing import TYPE_CHECKING, Any, Awaitable, Callable, TypeAlias
 from urllib.parse import unquote
 
+import aio_pika
 from sqlalchemy import select
 
 from src import create_logger
@@ -686,8 +687,9 @@ class IngestionWorker(BaseRabbitMQ):
             dlx_name=self.config.rabbitmq_config.dlq_config.dlx_name,
         )
 
-        priority = app_config.rabbitmq_config.queue_priority
+        priority = self.config.rabbitmq_config.queue_priority
         priority_int = map_priority_enum_to_int(priority)
+        max_retries: int = self.config.rabbitmq_config.max_retries
 
         # --------------- Setup queues ---------------
         queue = await self.aensure_queue(
@@ -698,6 +700,13 @@ class IngestionWorker(BaseRabbitMQ):
                 x_max_priority=priority_int,
             ),
             durable=durable,
+        )
+        # Wait queue with N ttl for retries
+        delay_queue_name = f"{queue_name}_delay"
+        await self.aensure_delay_queue(
+            delay_queue_name=delay_queue_name,
+            target_queue_name=queue_name,
+            ttl_ms=self.config.rabbitmq_config.dlq_config.ttl,
         )
 
         # Topic exchange: Routes messages based on routing key patterns
@@ -758,8 +767,61 @@ class IngestionWorker(BaseRabbitMQ):
 
                 except Exception as e:
                     logger.error(f"Error processing storage event: {e}", exc_info=True)
-                    # Re-raising the exception will cause the message to be NACKed, allowing for retries
-                    raise
+                    retry_count_raw = (message.headers or {}).get("x-retry-count", 0)
+                    try:
+                        if isinstance(retry_count_raw, (bytes, bytearray)):
+                            retry_count = int(retry_count_raw.decode())
+                        else:
+                            retry_count = int(str(retry_count_raw))
+                    except (TypeError, ValueError, UnicodeDecodeError):
+                        retry_count = 0
+                    if retry_count >= max_retries:
+                        logger.error(
+                            f"Retries exhausted for task_id={task_id} "
+                            f"(retry_count={retry_count}, max_retries={max_retries}). "
+                            "Routing message to DLQ."
+                        )
+                        await message.nack(requeue=False)  # -> DLQ
+                    else:
+                        next_retry_count: int = retry_count + 1
+                        retry_headers: dict[str, Any] = dict(message.headers or {})
+                        retry_headers["x-retry-count"] = next_retry_count
+
+                        retry_message = aio_pika.Message(
+                            body=message.body,
+                            headers=retry_headers,
+                            content_type=message.content_type,
+                            content_encoding=message.content_encoding,
+                            correlation_id=message.correlation_id,
+                            message_id=message.message_id,
+                            timestamp=message.timestamp,
+                            type=message.type,
+                            app_id=message.app_id,
+                            priority=message.priority,
+                            delivery_mode=aio_pika.DeliveryMode.PERSISTENT,
+                        )
+
+                        try:
+                            assert self.channel is not None, (
+                                "Channel is not established."
+                            )
+                            await self.channel.default_exchange.publish(
+                                retry_message,
+                                routing_key=delay_queue_name,
+                            )
+                            # ACK original only after delayed retry message is safely republished.
+                            await message.ack()
+                            logger.warning(
+                                f"Scheduled retry {next_retry_count}/{max_retries} for task_id={task_id} "
+                                f"via delay queue '{delay_queue_name}'."
+                            )
+                        except Exception as publish_error:
+                            logger.error(
+                                f"Failed to publish delayed retry for task_id={task_id}: {publish_error}. "
+                                "Routing original message to DLQ.",
+                                exc_info=True,
+                            )
+                            await message.nack(requeue=False)  # -> DLQ
 
 
 async def run_worker(callback: CallbackType) -> None:
@@ -774,7 +836,6 @@ async def run_worker(callback: CallbackType) -> None:
     -------
     None
     """
-    from src.config import app_config
 
     consumer = IngestionWorker(app_config)
 
