@@ -2,29 +2,15 @@
 
 High-performance PDF processing service featuring a FastAPI backend, asynchronous Celery workers, and automated ingestion from S3-compatible storage.
 
-## Architecture overview
-
-![Architecture Diagram](static/architecture_diagram.png)
-
-## Features
-
-- **Asynchronous PDF Processing**: Deep extraction of text, tables, and metadata using `Docling`, `PyMuPDF`, and `OCR` (`easyocr`).
-- **Distributed Task Management**: Scalable task processing with **Celery** across multiple priority queues (High, Medium, Low).
-- **Web UI & API**: Modern **FastAPI** backend with a server-rendered (Jinja2) Web UI for user login and interactive file uploads.
-- **S3-Compatible Storage**: Built-in integration with **MinIO** for managing uploads and processing artifacts using presigned URLs.
-- **Event-Driven Ingestion**: Automated background processing triggered by storage events via a dedicated **Storage Worker**.
-- **Webhooks**: Integrated **Webhook Server** for delivering real-time processing updates and task completion notifications to external services.
-- **Observability**: Real-time metrics via **Prometheus** and distributed tracing with **OpenTelemetry/Jaeger**.
-- **Security & Reliability**: JWT authentication, rate limiting (Guest/Free/Pro tiers), and circuit breaker patterns for resilient service communication.
-
 ## Table of contents
 
 <!-- TOC -->
 
 - [PDF Processing](#pdf-processing)
-  - [Architecture overview](#architecture-overview)
-  - [Features](#features)
   - [Table of contents](#table-of-contents)
+  - [Architecture overview](#architecture-overview)
+    - [Data flow from architecture diagram](#data-flow-from-architecture-diagram)
+  - [Features](#features)
   - [Technologies used](#technologies-used)
   - [Quick start](#quick-start)
     - [Prerequisites](#prerequisites)
@@ -40,6 +26,30 @@ High-performance PDF processing service featuring a FastAPI backend, asynchronou
   - [Repository layout](#repository-layout)
 
 <!-- /TOC -->
+
+## Architecture overview
+
+![Architecture Diagram](static/architecture_diagram.png)
+
+### Data flow (from architecture diagram)
+
+1. User asks the API server to generate a presigned S3 upload URL.
+2. API returns the presigned URL, and the user uploads the file directly to S3.
+3. S3 object-created events are published to the RabbitMQ event queue.
+4. Ingestion workers consume those events and dispatch PDF jobs to Celery workers.
+5. Celery workers process PDFs in parallel, store output files in S3, and save processing metadata/results in the database.
+6. A webhook posts final processing metadata to the client endpoint (metadata only, not the file).
+
+## Features
+
+- **Asynchronous PDF Processing**: Deep extraction of text, tables, and metadata using `Docling`, `PyMuPDF`, and `OCR` (`easyocr`).
+- **Distributed Task Management**: Scalable task processing with **Celery** across multiple priority queues (High, Medium, Low).
+- **Web UI & API**: Modern **FastAPI** backend with a server-rendered (Jinja2) Web UI for user login and interactive file uploads.
+- **S3-Compatible Storage**: Built-in integration with **MinIO** for managing uploads and processing artifacts using presigned URLs.
+- **Event-Driven Ingestion**: Automated background processing triggered by storage events via a dedicated **Storage Worker**.
+- **Webhooks**: Integrated **Webhook Server** for delivering real-time processing updates and task completion notifications to external services.
+- **Observability**: Real-time metrics via **Prometheus** and distributed tracing with **OpenTelemetry/Jaeger**.
+- **Security & Reliability**: JWT authentication, rate limiting (Guest/Free/Pro tiers), and circuit breaker patterns for resilient service communication.
 
 ## Technologies used
 
