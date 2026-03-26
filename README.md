@@ -2,6 +2,10 @@
 
 High-performance PDF processing service featuring a FastAPI backend, asynchronous Celery workers, and automated ingestion from S3-compatible storage.
 
+## Architecture overview
+
+![Architecture Diagram](static/architecture_diagram.png)
+
 ## Features
 
 - **Asynchronous PDF Processing**: Deep extraction of text, tables, and metadata using `Docling`, `PyMuPDF`, and `OCR` (`easyocr`).
@@ -15,14 +19,27 @@ High-performance PDF processing service featuring a FastAPI backend, asynchronou
 
 ## Table of contents
 
-- [Features](#features)
-- [Technologies used](#technologies-used)
-- [Quick start](#quick-start)
-- [Running the application](#running-the-application)
-- [Configuration](#configuration)
-- [Observability & Monitoring](#observability--monitoring)
-- [Development](#development)
-- [Repository layout](#repository-layout)
+<!-- TOC -->
+
+- [PDF Processing](#pdf-processing)
+  - [Architecture overview](#architecture-overview)
+  - [Features](#features)
+  - [Table of contents](#table-of-contents)
+  - [Technologies used](#technologies-used)
+  - [Quick start](#quick-start)
+    - [Prerequisites](#prerequisites)
+    - [Initial Setup](#initial-setup)
+  - [Running the application](#running-the-application)
+  - [Configuration](#configuration)
+    - [Environment variables](#environment-variables)
+  - [Observability & Monitoring](#observability--monitoring)
+  - [Scaling Guidelines](#scaling-guidelines)
+  - [Make Commands](#make-commands)
+  - [Data flow architecture](#data-flow-architecture)
+  - [Code style guidelines](#code-style-guidelines)
+  - [Repository layout](#repository-layout)
+
+<!-- /TOC -->
 
 ## Technologies used
 
@@ -129,6 +146,23 @@ The application is configured through:
 - `src/config/config.yaml`: Core application settings (file limits, rate limits, UI settings).
 - `.env`: Sensitive secrets like DB passwords, MinIO keys, and JWT secrets.
 
+### Environment variables
+
+Copy `.env.example` to `.env` and fill in the required values. Variables are
+grouped by service — most defaults work for local development as-is, except:
+
+| Group        | Required to change             | Notes                                              |
+|--------------|--------------------------------|----------------------------------------------------|
+| Auth         | `API_KEY_SALT`, `SECRET_KEY`   | Generate with `openssl rand -base64 16`            |
+| Database     | `POSTGRES_PASSWORD`            | Defaults are fine for local dev only               |
+| Redis        | `REDIS_PASSWORD`               | Defaults are fine for local dev only               |
+| AWS/MinIO    | `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY` | Use MinIO defaults locally        |
+| RabbitMQ     | `RABBITMQ_DEFAULT_USER`, `RABBITMQ_DEFAULT_PASS` | Use guest/guest locally       |
+| Webhook      | `WEBHOOK_URL`, `WEBHOOK_SECRET_KEY` | Only required if using webhook notifications  |
+
+Everything else can be left as defaults for local development. For production,
+also review `DEBUG`, `RELOAD`, `WORKERS`, `CELERY_CONCURRENCY`, and all passwords.
+
 ## Observability & Monitoring
 
 The service includes comprehensive monitoring out of the box:
@@ -136,6 +170,12 @@ The service includes comprehensive monitoring out of the box:
 - **Metrics**: Available at `http://localhost:8000/metrics` (Prometheus format).
 - **Tracing**: Visualized via Jaeger at `http://localhost:16686` when `make up` is running.
 - **Health Checks**: `http://localhost:8000/api/v1/health`.
+
+## Scaling Guidelines
+
+- **PDF worker**: Scale by adding more Celery worker processes. CELERY_CONCURRENCY controls threads/processes per worker. CPU-bound (OCR/extraction) so prefork is correct — roughly 1–2 workers per CPU core is a reasonable starting point.
+- **Storage worker**: Single instance handles normal load. Under upload spikes, run multiple instances — the RabbitMQ queue naturally load-balances across consumers with no extra config needed.
+- **Chord deadlock risk**: Never run `orchestrate_pdf_processing` and `process_single_chunk` on the same worker pool with limited concurrency — the orchestrator blocks a slot waiting for chunks that can't be picked up.
 
 ## Make Commands
 
