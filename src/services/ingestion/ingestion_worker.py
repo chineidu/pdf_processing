@@ -350,6 +350,11 @@ async def aprocess_pdf_documents(
                 logger.warning(f"Skipping output file: {storage_key}")
                 continue
 
+            # Skip temporary chunk files created by the scatter-gather pipeline
+            if "/temp/" in storage_key:
+                logger.debug(f"Skipping temporary chunk file: {storage_key}")
+                continue
+
             # Filetype check (PDF only)
             if not storage_key.lower().endswith(".pdf"):
                 logger.warning(f"Skipping non-PDF file: {storage_key}")

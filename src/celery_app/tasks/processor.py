@@ -1,3 +1,4 @@
+import asyncio
 import base64
 import tempfile
 from pathlib import Path
@@ -6,6 +7,7 @@ from typing import Any
 import fitz  # PyMuPDF
 import pendulum
 from celery import chord, group, shared_task
+from celery.exceptions import Ignore
 from celery.result import allow_join_result
 
 from src import create_logger
@@ -185,15 +187,16 @@ async def aupdate_task_metadata(
         return updated_task.webhook_url
 
 
-async def aupdate_task_status(task_id: str, status: StatusTypeEnum) -> None:
+async def aupdate_task_status(task_id: str, status: StatusTypeEnum) -> bool:
     """Update the status of a task without touching other fields."""
     # Lightweight status-only update used to mark processing states
     async with aget_db_session() as session:
         task_repo = TaskRepository(db=session)
-        await task_repo.aupdate_task(
+        result = await task_repo.aupdate_task(
             task_id=task_id,
             update_data={"status": status.value},
         )
+        return result is not None
 
 
 async def aupdate_webhook_delivered_at(task_id: str) -> None:
@@ -370,6 +373,33 @@ async def avalidation_checks(
         return None
 
 
+async def adelete_temp_chunk_objects(
+    task_id: str,
+    chunk_task_ids: list[str],
+    s3_service: Any,
+) -> None:
+    """Best-effort cleanup for temporary chunk PDFs stored in object storage."""
+    if not chunk_task_ids:
+        return
+
+    for chunk_task_id in chunk_task_ids:
+        object_name = s3_service.get_object_name(
+            task_id=chunk_task_id,
+            file_extension=".pdf",
+            operation="temp",
+        )
+        try:
+            await asyncio.to_thread(
+                s3_service.s3_client.delete_object,
+                Bucket=s3_service.bucket_name,
+                Key=object_name,
+            )
+        except Exception as exc:
+            logger.warning(
+                f"Task {task_id} failed to delete temporary chunk object '{object_name}': {exc}"
+            )
+
+
 async def aprocess_and_update(
     etag: str,
     task_id: str,
@@ -380,8 +410,7 @@ async def aprocess_and_update(
     webhook_service: Any,
     routing_options: dict[str, Any],
 ) -> dict[str, Any]:
-    """Combined async workflow: chunked processing (scatter), (combine processed chunk results) gather,
-    upload, and update database."""
+    """Combined async workflow: split once, process chunk files, combine, upload, update DB."""
 
     # Download file from S3-compatible storage into the worker temp dir
     await s3_service.adownload_file_from_s3(
@@ -402,6 +431,28 @@ async def aprocess_and_update(
         # (chunk_idx, start_page, end_page)
         chunk_ranges: list[tuple[int, int, int]] = []
 
+    elif total_pages > MAX_PAGES:
+        logger.warning(
+            f"Task {task_id} has {total_pages} pages which exceeds the maximum of "
+            f"{MAX_PAGES} pages. Marking as completed without processing."
+        )
+        metadata_copy = metadata.copy() if metadata is not None else {}
+        metadata_copy["reason"] = DBUpdateReasonEnum.EXCEEDS_SIZE_LIMIT.value
+        webhook_url = await aupdate_task_metadata(
+            task_id,
+            {},
+            StatusTypeEnum.COMPLETED,
+            update_data={"_metadata": metadata_copy},
+        )
+        return await asend_success_notification(
+            etag=etag,
+            task_id=task_id,
+            uploaded_files={},
+            webhook_url=webhook_url,
+            webhook_service=webhook_service,
+            metadata=MetadataResult(**metadata_copy),
+        )
+
     else:
         # (chunk_idx, start_page, end_page)
         chunk_ranges = _chunk_page_ranges(
@@ -413,37 +464,76 @@ async def aprocess_and_update(
         f"Processing task {task_id} in {len(chunk_ranges)} chunk(s) for {total_pages} page(s)"
     )
 
-    chunk_signatures = [
-        process_single_chunk.s(
-            etag=etag,
-            task_id=task_id,
-            chunk_idx=chunk_idx,
-            start_page=start_page,
-            end_page=end_page,
-            export_format=ExportFormat.MARKDOWN.value,
-        ).set(**routing_options)
-        for chunk_idx, start_page, end_page in chunk_ranges
-    ]
+    # Pre-split chunk PDFs once and upload each chunk to object storage.
+    # Chunk workers then download their specific chunk file directly.
+    chunk_payloads: list[tuple[int, int, int, str]] = []
+    chunk_task_ids: list[str] = []
+    try:
+        if chunk_ranges:
+            with fitz.open(filepath) as source_doc:
+                for chunk_idx, start_page, end_page in chunk_ranges:
+                    chunk_task_id = f"{task_id}-chunk-{chunk_idx}"
+                    with tempfile.NamedTemporaryFile(suffix=".pdf") as chunk_tmp_file:
+                        chunk_file_path = Path(chunk_tmp_file.name)
+                        with fitz.open() as chunk_doc:
+                            chunk_doc.insert_pdf(
+                                source_doc,
+                                from_page=start_page,
+                                to_page=end_page,
+                            )
+                            chunk_doc.save(str(chunk_file_path))
 
-    # Orchestrator blocks here intentionally — allow_join_result() permits .get()
-    # inside a worker. It ensures this task runs on a dedicated queue to avoid
-    # deadlocking with process_single_chunk workers competing for the same slots.
-    # `.get` is used because we need the results to proceed with combining and uploading.
-    if chunk_signatures:
-        with allow_join_result():
-            encoded_outputs: dict[str, str] = (
-                chord(
-                    group(chunk_signatures),
-                    combine_processed_chunks.s().set(**routing_options),
+                        await s3_service.aupload_file_to_s3(
+                            filepath=str(chunk_file_path),
+                            task_id=chunk_task_id,
+                            correlation_id=etag,
+                            operation="temp",
+                            max_allowed_size_bytes=MAX_SIZE_BYTES,
+                        )
+
+                    chunk_task_ids.append(chunk_task_id)
+                    chunk_payloads.append(
+                        (chunk_idx, start_page, end_page, chunk_task_id)
+                    )
+
+        chunk_signatures = [
+            process_single_chunk.s(
+                etag=etag,
+                task_id=task_id,
+                chunk_idx=chunk_idx,
+                start_page=start_page,
+                end_page=end_page,
+                chunk_task_id=chunk_task_id,
+                export_format=ExportFormat.MARKDOWN.value,
+            ).set(**routing_options)
+            for chunk_idx, start_page, end_page, chunk_task_id in chunk_payloads
+        ]
+
+        # Orchestrator blocks here intentionally — allow_join_result() permits .get()
+        # inside a worker. It ensures this task runs on a dedicated queue to avoid
+        # deadlocking with process_single_chunk workers competing for the same slots.
+        # `.get` is used because we need the results to proceed with combining and uploading.
+        if chunk_signatures:
+            with allow_join_result():
+                encoded_outputs: dict[str, str] = (
+                    chord(
+                        group(chunk_signatures),
+                        combine_processed_chunks.s().set(**routing_options),
+                    )
+                    .apply_async()
+                    .get()
                 )
-                .apply_async()
-                .get()
-            )
-    else:
-        encoded_outputs = {}
+        else:
+            encoded_outputs = {}
+    finally:
+        await adelete_temp_chunk_objects(
+            task_id=task_id,
+            chunk_task_ids=chunk_task_ids,
+            s3_service=s3_service,
+        )
 
     # Decode merged outputs and upload processed artifacts to S3
-    combined_outputs = _decode_processed_outputs(encoded_outputs)
+    combined_outputs: dict[str, bytes] = _decode_processed_outputs(encoded_outputs)
     uploaded_files: dict[str, str] = await processor.aupload(
         s3_service=s3_service,
         processed_outputs=combined_outputs,
@@ -514,12 +604,13 @@ def process_single_chunk(  # noqa: ANN201
     chunk_idx: int,
     start_page: int,
     end_page: int,
+    chunk_task_id: str,
     export_format: str = ExportFormat.MARKDOWN.value,
 ) -> dict[str, Any]:
     """Process a single PDF chunk and return broker-safe serialized chunk outputs."""
 
-    # Extract a page-range from the source PDF, run the processor on it, and
-    # encode outputs as base64 strings so they're safe to pass through the broker.
+    # Download the pre-split chunk PDF from object storage, run processing,
+    # and encode outputs as base64 strings so they're safe to pass through the broker.
 
     processor = self.processor
     s3_service = self.s3_service
@@ -527,23 +618,15 @@ def process_single_chunk(  # noqa: ANN201
 
     with tempfile.TemporaryDirectory() as tmp_dir:
         tmp_path = Path(tmp_dir)
-        source_file = tmp_path / f"{task_id}.pdf"
         chunk_file = tmp_path / f"{task_id}-chunk-{chunk_idx}.pdf"
 
         async def aprocess_chunk() -> dict[str, Any]:
             await s3_service.adownload_file_from_s3(
-                filepath=str(source_file),
-                task_id=task_id,
+                filepath=str(chunk_file),
+                task_id=chunk_task_id,
                 file_extension=".pdf",
-                operation="input",
+                operation="temp",
             )
-
-            source_doc = fitz.open(str(source_file))
-            chunk_doc = fitz.open()
-            chunk_doc.insert_pdf(source_doc, from_page=start_page, to_page=end_page)
-            chunk_doc.save(str(chunk_file))
-            chunk_doc.close()
-            source_doc.close()
 
             processed_outputs: PDFOutputResult = await processor.aprocess_data(
                 source=chunk_file,
@@ -643,40 +726,37 @@ def orchestrate_pdf_processing(
 
     # Mark task as PROCESSING immediately so idempotency TTL kicks in correctly
     loop = _get_worker_event_loop()
-    loop.run_until_complete(
+    task_found = loop.run_until_complete(
         aupdate_task_status(task_id=task_id, status=StatusTypeEnum.PROCESSING)
     )
+    # Drop broker events for unknown task IDs (e.g., temp chunk object events) without retries.
+    if not task_found:
+        logger.debug(f"Task {task_id} not found in DB — discarding spurious invocation")
+        raise Ignore()
 
     try:
-        # Validate file size from metadata if available (early-exit for oversized files)
-        if metadata and metadata["file_size_bytes"] is not None:
-            metadata_copy = metadata.copy()
-            file_size_value = metadata_copy["file_size_bytes"]
-            file_size_int = int(file_size_value) if file_size_value is not None else 0
-            metadata_copy["file_size_bytes"] = file_size_int
-            if file_size_int > MAX_SIZE_BYTES:
-                metadata_copy["reason"] = DBUpdateReasonEnum.EXCEEDS_SIZE_LIMIT.value
-                early_termination_result = loop.run_until_complete(
-                    avalidation_checks(
-                        etag=etag,
-                        task_id=task_id,
-                        metadata=metadata_copy,
-                        webhook_service=self.webhook_service,
-                    )
-                )
-                if early_termination_result:
-                    uploaded_files = early_termination_result.get("uploaded_files", {})
-                    completed_at = early_termination_result.get(
-                        "completed_at", pendulum.now("UTC").isoformat()
-                    )
+        # Run centralized file-size validation (early-exit for oversized files).
+        early_termination_result = loop.run_until_complete(
+            avalidation_checks(
+                etag=etag,
+                task_id=task_id,
+                metadata=metadata,
+                webhook_service=self.webhook_service,
+            )
+        )
+        if early_termination_result:
+            uploaded_files = early_termination_result.get("uploaded_files", {})
+            completed_at = early_termination_result.get(
+                "completed_at", pendulum.now("UTC").isoformat()
+            )
 
-                    return ProcessDataTaskResult(
-                        status=StatusTypeEnum.COMPLETED.value,
-                        success=True,
-                        task_id=task_id,
-                        completed_at=completed_at,
-                        file_result_url=uploaded_files,
-                    )
+            return ProcessDataTaskResult(
+                status=StatusTypeEnum.COMPLETED.value,
+                success=True,
+                task_id=task_id,
+                completed_at=completed_at,
+                file_result_url=uploaded_files,
+            )
 
         # If page count metadata isn't present, continue but log for visibility
         logger.info(
