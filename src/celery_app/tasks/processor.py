@@ -23,6 +23,7 @@ from src.schemas.types import (
     ExportFormat,
     PDFOutputResult,
     StatusTypeEnum,
+    TaskProgressMessageEnum,
 )
 from src.utilities.utils import MSGSPEC_DECODER, json_dumps
 
@@ -32,6 +33,11 @@ logger.propagate = False  # This prevents double logging to the root logger
 MAX_PAGES: int = app_config.pdf_processing_config.max_num_pages
 CHUNK_SIZE: int = app_config.pdf_processing_config.chunk_size
 MAX_SIZE_BYTES: int = app_config.pdf_processing_config.max_file_size_bytes
+
+
+def _normalize_progress_percentage(progress_percentage: int) -> int:
+    """Clamp progress percentage to the inclusive range [0, 100]."""
+    return max(0, min(100, int(progress_percentage)))
 
 
 def _get_task_routing_options(task: Any) -> dict[str, Any]:
@@ -168,6 +174,21 @@ async def aupdate_task_metadata(
         Webhook URL stored on the task, if present.
     """
     # Persist final file URLs and status to the DB, return any webhook URL
+    terminal_metadata_message = (
+        TaskProgressMessageEnum.COMPLETED
+        if status == StatusTypeEnum.COMPLETED
+        else TaskProgressMessageEnum.FAILED
+    )
+    merged_update_data: dict[str, Any] = dict(update_data or {})
+    existing_metadata = merged_update_data.get("_metadata") or {}
+    terminal_metadata: dict[str, Any] = dict(existing_metadata)
+
+    if "progress_percentage" not in terminal_metadata:
+        terminal_metadata["progress_percentage"] = 100
+    if "progress_message" not in terminal_metadata:
+        terminal_metadata["progress_message"] = terminal_metadata_message
+
+    merged_update_data["_metadata"] = terminal_metadata
 
     async with aget_db_session() as session:
         task_repo = TaskRepository(db=session)
@@ -176,7 +197,7 @@ async def aupdate_task_metadata(
             update_data={
                 "status": status.value,
                 "file_result_key": json_dumps(uploaded_files),
-                **(update_data or {}),
+                **merged_update_data,
             },
             add_completed_at=True,
         )
@@ -195,6 +216,38 @@ async def aupdate_task_status(task_id: str, status: StatusTypeEnum) -> bool:
         result = await task_repo.aupdate_task(
             task_id=task_id,
             update_data={"status": status.value},
+        )
+        return result is not None
+
+
+async def aupdate_task_progress(
+    task_id: str,
+    progress_percentage: int,
+    progress_message: TaskProgressMessageEnum | None = None,
+) -> bool:
+    """Persist coarse task progress in metadata for live status monitoring."""
+
+    async with aget_db_session() as session:
+        task_repo = TaskRepository(db=session)
+        db_task = await task_repo.aget_task_by_task_id(task_id=task_id)
+        if db_task is None:
+            return False
+
+        metadata = dict(getattr(db_task, "_metadata", {}) or {})
+        existing_progress = metadata.get("progress_percentage")
+        next_progress = _normalize_progress_percentage(progress_percentage)
+
+        if isinstance(existing_progress, int):
+            metadata["progress_percentage"] = max(existing_progress, next_progress)
+        else:
+            metadata["progress_percentage"] = next_progress
+
+        if progress_message:
+            metadata["progress_message"] = progress_message
+
+        result = await task_repo.aupdate_task(
+            task_id=task_id,
+            update_data={"_metadata": metadata},
         )
         return result is not None
 
@@ -463,9 +516,16 @@ async def aprocess_and_update(
     logger.info(
         f"Processing task {task_id} in {len(chunk_ranges)} chunk(s) for {total_pages} page(s)"
     )
+    await aupdate_task_progress(
+        task_id=task_id,
+        progress_percentage=10,
+        progress_message=TaskProgressMessageEnum.SPLITTING_CHUNKS,
+    )
 
     # Pre-split chunk PDFs once and upload each chunk to object storage.
     # Chunk workers then download their specific chunk file directly.
+
+    # (chunk_idx, start_page, end_page, chunk_task_id)
     chunk_payloads: list[tuple[int, int, int, str]] = []
     chunk_task_ids: list[str] = []
     try:
@@ -475,6 +535,7 @@ async def aprocess_and_update(
                     chunk_task_id = f"{task_id}-chunk-{chunk_idx}"
                     with tempfile.NamedTemporaryFile(suffix=".pdf") as chunk_tmp_file:
                         chunk_file_path = Path(chunk_tmp_file.name)
+                        # Create a new PDF for the chunk by copying the relevant pages from the source PDF
                         with fitz.open() as chunk_doc:
                             chunk_doc.insert_pdf(
                                 source_doc,
@@ -494,6 +555,15 @@ async def aprocess_and_update(
                     chunk_task_ids.append(chunk_task_id)
                     chunk_payloads.append(
                         (chunk_idx, start_page, end_page, chunk_task_id)
+                    )
+
+                    chunk_split_progress = 10 + int(
+                        25 * (chunk_idx / max(1, len(chunk_ranges)))
+                    )
+                    await aupdate_task_progress(
+                        task_id=task_id,
+                        progress_percentage=chunk_split_progress,
+                        progress_message=TaskProgressMessageEnum.SPLITTING_CHUNKS,
                     )
 
         chunk_signatures = [
@@ -523,6 +593,11 @@ async def aprocess_and_update(
                     .apply_async()
                     .get()
                 )
+            await aupdate_task_progress(
+                task_id=task_id,
+                progress_percentage=80,
+                progress_message=TaskProgressMessageEnum.COMBINING_OUTPUTS,
+            )
         else:
             encoded_outputs = {}
     finally:
@@ -534,6 +609,11 @@ async def aprocess_and_update(
 
     # Decode merged outputs and upload processed artifacts to S3
     combined_outputs: dict[str, bytes] = _decode_processed_outputs(encoded_outputs)
+    await aupdate_task_progress(
+        task_id=task_id,
+        progress_percentage=90,
+        progress_message=TaskProgressMessageEnum.UPLOADING_OUTPUTS,
+    )
     uploaded_files: dict[str, str] = await processor.aupload(
         s3_service=s3_service,
         processed_outputs=combined_outputs,
@@ -728,6 +808,13 @@ def orchestrate_pdf_processing(
     loop = _get_worker_event_loop()
     task_found = loop.run_until_complete(
         aupdate_task_status(task_id=task_id, status=StatusTypeEnum.PROCESSING)
+    )
+    loop.run_until_complete(
+        aupdate_task_progress(
+            task_id=task_id,
+            progress_percentage=5,
+            progress_message=TaskProgressMessageEnum.PROCESSING_STARTED,
+        )
     )
     # Drop broker events for unknown task IDs (e.g., temp chunk object events) without retries.
     if not task_found:

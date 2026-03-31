@@ -3,7 +3,7 @@ from datetime import datetime
 from pydantic import Field
 
 from src.schemas.base import BaseSchema
-from src.schemas.types import MimeTypeEnum, StatusTypeEnum
+from src.schemas.types import MimeTypeEnum, StatusTypeEnum, TaskProgressMessageEnum
 
 
 class PresignedURLResponse(BaseSchema):
@@ -44,6 +44,14 @@ class TaskStatusResponse(BaseSchema):
     updated_at: datetime | None = Field(description="Task last update timestamp.")
     completed_at: datetime | None = Field(description="Task completion timestamp.")
     error_message: str | None = Field(description="Error message if the task failed.")
+    progress_percentage: int | None = Field(
+        default=None,
+        description="Coarse processing progress percentage from 0 to 100.",
+    )
+    progress_message: TaskProgressMessageEnum | None = Field(
+        default=None,
+        description="Coarse progress phase label for UI rendering.",
+    )
     download_urls: dict[str, str] | None = Field(
         description="Mapping of output format names to download URLs."
     )

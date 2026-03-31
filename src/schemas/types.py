@@ -98,6 +98,27 @@ class StatusTypeEnum(StrEnum):
     FAILED = "failed"  # System/Infrastructure error (e.g., RMQ disconnect, DB timeout). Eligible for retry.
 
 
+class TaskProgressMessageEnum(StrEnum):
+    """Coarse progress phases emitted for long-running task monitoring."""
+
+    VALIDATING = "validating"
+    PROCESSING_STARTED = "processing_started"
+    SPLITTING_CHUNKS = "splitting_chunks"
+    COMBINING_OUTPUTS = "combining_outputs"
+    UPLOADING_OUTPUTS = "uploading_outputs"
+    COMPLETED = "completed"
+    SKIPPED = "skipped"
+    FAILED = "failed"
+
+
+class TaskStreamEventEnum(StrEnum):
+    """SSE event and comment labels emitted by task stream endpoint."""
+
+    ERROR = "error"
+    TASK_STATUS = "task.status"
+    KEEPALIVE = "keepalive"
+
+
 IDEMPOTENCY_ACTIVE_STATUSES: Final = frozenset(
     [
         # --------------------------------------------------------------------

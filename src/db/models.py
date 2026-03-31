@@ -223,7 +223,8 @@ class DBTask(Base):
     file_type: Mapped[str] = mapped_column(String(50), nullable=False)
     etag: Mapped[str] = mapped_column(String(255), nullable=True)
 
-    # Metadata (Attribute name 'metadata' is reserved by SQLAlchemy)
+    # Metadata attribute name 'metadata' is reserved by SQLAlchemy. Use '_metadata' instead and set
+    # JSON column name to 'metadata' via mapped_column
     _metadata: Mapped[dict[str, Any]] = mapped_column(
         JSON, name="metadata", nullable=True
     )

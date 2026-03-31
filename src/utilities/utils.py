@@ -39,6 +39,24 @@ def json_dumps(data: Any) -> str:
     return MSGSPEC_ENCODER.encode(data).decode("utf-8")
 
 
+def json_loads(data: str | bytes | bytearray) -> Any:
+    """Deserialize a JSON string or bytes payload using msgspec.
+
+    Parameters
+    ----------
+    data : str | bytes | bytearray
+        The JSON payload to deserialize.
+
+    Returns
+    -------
+    Any
+        The deserialized Python object.
+    """
+    if isinstance(data, str):
+        data = data.encode("utf-8")
+    return MSGSPEC_DECODER.decode(data)
+
+
 def sort_dict(data: dict[str, Any]) -> dict[str, Any]:
     """Recursively sort a dictionary by its keys.
 

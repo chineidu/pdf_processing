@@ -61,8 +61,53 @@
                 Select a file to upload.</div>
 
             <div id="status-section" class="mt-5 hidden">
+                <div class="rounded-xl border border-slate-200 bg-slate-50 p-4">
+                    <div class="flex flex-wrap items-center justify-between gap-2">
+                        <div class="inline-flex items-center gap-2">
+                            <span class="text-xs font-semibold uppercase tracking-wide text-slate-500">Live
+                                monitor</span>
+                            <span id="live-indicator"
+                                class="inline-flex h-2.5 w-2.5 rounded-full bg-emerald-500"></span>
+                        </div>
+                        <span id="monitor-status-badge"
+                            class="inline-flex rounded-full bg-slate-200 px-3 py-1 text-xs font-medium text-slate-700">Pending</span>
+                    </div>
+
+                    <div class="mt-4">
+                        <div class="mb-1 flex items-center justify-between text-xs text-slate-600">
+                            <span id="monitor-progress-label">Waiting for updates...</span>
+                            <span id="monitor-progress-value" class="font-semibold text-slate-700">0%</span>
+                        </div>
+                        <div class="h-2.5 overflow-hidden rounded-full bg-slate-200">
+                            <div id="monitor-progress-bar"
+                                class="h-full rounded-full bg-slate-800 transition-all duration-300" style="width: 0%">
+                            </div>
+                        </div>
+                    </div>
+
+                    <div id="monitor-stages" class="mt-4 grid grid-cols-2 gap-2 sm:grid-cols-5">
+                        <span data-stage="uploaded"
+                            class="rounded-md border border-slate-200 bg-white px-2 py-1 text-xs text-slate-500">Uploaded</span>
+                        <span data-stage="validating"
+                            class="rounded-md border border-slate-200 bg-white px-2 py-1 text-xs text-slate-500">Validating</span>
+                        <span data-stage="processing"
+                            class="rounded-md border border-slate-200 bg-white px-2 py-1 text-xs text-slate-500">Processing</span>
+                        <span data-stage="uploading_outputs"
+                            class="rounded-md border border-slate-200 bg-white px-2 py-1 text-xs text-slate-500">Uploading
+                            outputs</span>
+                        <span data-stage="completed"
+                            class="rounded-md border border-slate-200 bg-white px-2 py-1 text-xs text-slate-500">Completed</span>
+                    </div>
+
+                    <div class="mt-4">
+                        <p class="mb-2 text-xs font-semibold uppercase tracking-wide text-slate-500">Activity</p>
+                        <ul id="monitor-activity" class="max-h-32 space-y-1 overflow-auto pr-1 text-xs text-slate-600">
+                        </ul>
+                    </div>
+                </div>
+
                 <button id="status-btn"
-                    class="inline-flex items-center justify-center gap-2 rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm font-medium text-slate-700 shadow-sm transition hover:bg-slate-50 active:scale-95 disabled:cursor-not-allowed disabled:opacity-60">
+                    class="mt-4 inline-flex items-center justify-center gap-2 rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm font-medium text-slate-700 shadow-sm transition hover:bg-slate-50 active:scale-95 disabled:cursor-not-allowed disabled:opacity-60">
                     <svg id="status-spinner" class="hidden h-4 w-4 animate-spin text-slate-700"
                         xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" aria-hidden="true">
                         <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4">
@@ -72,8 +117,11 @@
                     </svg>
                     <span id="status-btn-label">Check status</span>
                 </button>
-                <pre id="status-output"
-                    class="mt-3 whitespace-pre-wrap rounded-lg border border-slate-200 bg-slate-50 p-3 text-xs text-slate-700 transition-opacity duration-200 opacity-100"></pre>
+                <details class="mt-3">
+                    <summary class="cursor-pointer text-xs font-medium text-slate-600">Debug payload</summary>
+                    <pre id="status-output"
+                        class="mt-2 whitespace-pre-wrap rounded-lg border border-slate-200 bg-slate-50 p-3 text-xs text-slate-700 transition-opacity duration-200 opacity-100"></pre>
+                </details>
             </div>
         </section>
     </main>
@@ -96,10 +144,41 @@
         const result = document.getElementById("result");
         const statusOutput = document.getElementById("status-output");
         const LAST_TASK_STORAGE_KEY = "lastUploadTask";
+        const POLLING_INTERVAL_MS = 4000;
+        const STALE_UPDATE_MS = 12000;
+        const STALE_CHECK_INTERVAL_MS = 3000;
+        const STALE_PROBE_LIMIT = 3;
+        const TERMINAL_STATUSES = new Set(["completed", "failed", "skipped", "unprocessable"]);
+        const PROGRESS_BY_STATUS = {
+            pending: 5,
+            uploaded: 20,
+            validating: 35,
+            processing: 60,
+            completed: 100,
+            failed: 100,
+            skipped: 100,
+            unprocessable: 100,
+        };
         const uploadSpinner = document.getElementById("upload-spinner");
         const uploadBtnLabel = document.getElementById("upload-btn-label");
+        const monitorStatusBadge = document.getElementById("monitor-status-badge");
+        const monitorProgressLabel = document.getElementById("monitor-progress-label");
+        const monitorProgressValue = document.getElementById("monitor-progress-value");
+        const monitorProgressBar = document.getElementById("monitor-progress-bar");
+        const monitorActivity = document.getElementById("monitor-activity");
+        const liveIndicator = document.getElementById("live-indicator");
+        const monitorStages = Array.from(document.querySelectorAll("#monitor-stages [data-stage]"));
 
         let currentTaskId = null;
+        let streamAbortController = null;
+        let pollingTimer = null;
+        let monitorMode = "idle";
+        let lastActivityFingerprint = null;
+        let lastStatusFingerprint = null;
+        let lastProgressAt = 0;
+        let staleProbeCount = 0;
+        let staleWatchdogTimer = null;
+        let staleProbeInFlight = false;
 
         function persistLastTask(taskId, metadata = {}) {
             localStorage.setItem(LAST_TASK_STORAGE_KEY, JSON.stringify({
@@ -158,10 +237,192 @@
             uploadSpinner.classList.toggle("hidden", !isLoading);
         }
 
-        function setStatusLoading(isLoading) {
+        function setStatusLoading(isLoading, loadingLabel = "Checking...", idleLabel = "Check status") {
             statusBtn.disabled = isLoading;
-            statusBtnLabel.textContent = isLoading ? "Checking..." : "Check status";
+            statusBtnLabel.textContent = isLoading ? loadingLabel : idleLabel;
             statusSpinner.classList.toggle("hidden", !isLoading);
+        }
+
+        function toTitle(value) {
+            return (value || "")
+                .toString()
+                .replaceAll("_", " ")
+                .replace(/\b\w/g, (c) => c.toUpperCase());
+        }
+
+        function getProgressValue(payload) {
+            if (typeof payload.progressPercentage === "number") {
+                return Math.max(0, Math.min(100, payload.progressPercentage));
+            }
+
+            const fallback = PROGRESS_BY_STATUS[(payload.status || "").toLowerCase()];
+            return typeof fallback === "number" ? fallback : 0;
+        }
+
+        function stageWeight(stage) {
+            const order = {
+                uploaded: 1,
+                validating: 2,
+                processing: 3,
+                uploading_outputs: 4,
+                completed: 5,
+            };
+            return order[stage] || 0;
+        }
+
+        function activeStage(payload) {
+            const message = (payload.progressMessage || "").toLowerCase();
+            if (message === "uploading_outputs") return "uploading_outputs";
+            const status = (payload.status || "").toLowerCase();
+            if (status === "completed") return "completed";
+            if (status === "processing") return message === "processing_started" ? "processing" : "processing";
+            if (status === "validating") return "validating";
+            if (status === "uploaded" || status === "pending") return "uploaded";
+            return "uploaded";
+        }
+
+        function setStatusBadge(status) {
+            const normalized = (status || "unknown").toLowerCase();
+            const palette = {
+                pending: "bg-slate-200 text-slate-700",
+                uploaded: "bg-indigo-100 text-indigo-700",
+                validating: "bg-amber-100 text-amber-800",
+                processing: "bg-blue-100 text-blue-700",
+                completed: "bg-emerald-100 text-emerald-700",
+                failed: "bg-rose-100 text-rose-700",
+                skipped: "bg-orange-100 text-orange-700",
+                unprocessable: "bg-rose-100 text-rose-700",
+            };
+            monitorStatusBadge.className = `inline-flex rounded-full px-3 py-1 text-xs font-medium ${palette[normalized] || "bg-slate-200 text-slate-700"}`;
+            monitorStatusBadge.textContent = toTitle(normalized);
+        }
+
+        function setStageHighlights(payload) {
+            const stage = activeStage(payload);
+            const activeWeight = stageWeight(stage);
+
+            monitorStages.forEach((item) => {
+                const itemStage = item.dataset.stage;
+                const itemWeight = stageWeight(itemStage);
+                item.className = "rounded-md border px-2 py-1 text-xs";
+
+                if (itemWeight < activeWeight) {
+                    item.classList.add("border-emerald-200", "bg-emerald-50", "text-emerald-700");
+                    return;
+                }
+
+                if (itemWeight === activeWeight) {
+                    item.classList.add("border-slate-300", "bg-white", "text-slate-900", "font-semibold");
+                    return;
+                }
+
+                item.classList.add("border-slate-200", "bg-white", "text-slate-500");
+            });
+        }
+
+        function appendActivityLine(payload, source) {
+            const phase = payload.progressMessage ? toTitle(payload.progressMessage) : toTitle(payload.status);
+            const progress = getProgressValue(payload);
+            const fingerprint = `${payload.status}|${payload.progressMessage || ""}|${progress}|${source}`;
+            if (fingerprint === lastActivityFingerprint) {
+                return;
+            }
+            lastActivityFingerprint = fingerprint;
+
+            const li = document.createElement("li");
+            const time = new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", second: "2-digit" });
+            li.innerHTML = `<span class="font-medium text-slate-700">${time}</span> · ${phase} <span class="text-slate-400">(${progress}%, ${source})</span>`;
+
+            monitorActivity.prepend(li);
+            while (monitorActivity.children.length > 8) {
+                monitorActivity.removeChild(monitorActivity.lastChild);
+            }
+        }
+
+        function resetProgressWatch(payload) {
+            const fingerprint = `${payload.status}|${payload.progressMessage || ""}|${payload.progressPercentage ?? "na"}`;
+            if (fingerprint !== lastStatusFingerprint) {
+                lastStatusFingerprint = fingerprint;
+                lastProgressAt = Date.now();
+                staleProbeCount = 0;
+            }
+        }
+
+        async function probeTaskStatus(taskId) {
+            if (staleProbeInFlight || !currentTaskId || currentTaskId !== taskId) {
+                return;
+            }
+
+            staleProbeInFlight = true;
+            try {
+                const payload = await fetchTaskStatus(taskId);
+                renderTaskStatus(payload, "probe");
+            } catch (error) {
+                appendActivityLine(
+                    {
+                        status: "processing",
+                        progressMessage: "probe_failed",
+                        progressPercentage: null,
+                    },
+                    "probe"
+                );
+                setStatusOutput(error.message || "Probe refresh failed.");
+            } finally {
+                staleProbeInFlight = false;
+            }
+        }
+
+        function startStaleWatchdog(taskId) {
+            if (staleWatchdogTimer) {
+                clearInterval(staleWatchdogTimer);
+            }
+
+            lastProgressAt = Date.now();
+            staleProbeCount = 0;
+
+            staleWatchdogTimer = setInterval(() => {
+                if (!currentTaskId || currentTaskId !== taskId || monitorMode === "idle") {
+                    return;
+                }
+
+                const lastTask = getLastTask();
+                if (!lastTask || isTerminalStatus(lastTask.status)) {
+                    return;
+                }
+
+                const elapsed = Date.now() - lastProgressAt;
+                if (elapsed < STALE_UPDATE_MS) {
+                    return;
+                }
+
+                staleProbeCount += 1;
+                appendActivityLine(
+                    {
+                        status: lastTask.status || "processing",
+                        progressMessage: "no_updates_checking",
+                        progressPercentage: lastTask.progressPercentage ?? null,
+                    },
+                    "watchdog"
+                );
+
+                probeTaskStatus(taskId);
+
+                if (staleProbeCount >= STALE_PROBE_LIMIT) {
+                    setResult(
+                        `<div class="font-medium text-slate-900 mb-1">Still waiting for pipeline activity</div>` +
+                        `<div class="text-slate-700">No status movement detected for ${Math.floor(elapsed / 1000)}s. ` +
+                        `If this persists, confirm ingestion and celery workers are running.</div>`
+                    );
+
+                    if (monitorMode === "live") {
+                        startPollingFallback(taskId, "no_live_progress_events");
+                    }
+                }
+            }, STALE_CHECK_INTERVAL_MS);
+        }
+
+        function isTerminalStatus(status) {
+            return TERMINAL_STATUSES.has((status || "").toLowerCase());
         }
 
         function resolveContentType(file) {
@@ -268,6 +529,187 @@
             return response.json();
         }
 
+        function stopTaskMonitoring() {
+            if (streamAbortController) {
+                streamAbortController.abort();
+                streamAbortController = null;
+            }
+
+            if (pollingTimer) {
+                clearTimeout(pollingTimer);
+                pollingTimer = null;
+            }
+
+            if (staleWatchdogTimer) {
+                clearInterval(staleWatchdogTimer);
+                staleWatchdogTimer = null;
+            }
+
+            monitorMode = "idle";
+            liveIndicator.className = "inline-flex h-2.5 w-2.5 rounded-full bg-slate-400";
+            setStatusLoading(false);
+        }
+
+        function renderTaskStatus(payload, source = "poll") {
+            setStatusOutput(JSON.stringify(payload, null, 2));
+
+            const progress = getProgressValue(payload);
+            setStatusBadge(payload.status);
+            monitorProgressBar.style.width = `${progress}%`;
+            monitorProgressValue.textContent = `${progress}%`;
+            monitorProgressLabel.textContent = payload.progressMessage
+                ? toTitle(payload.progressMessage)
+                : `Task is ${toTitle(payload.status)}`;
+            liveIndicator.className = `inline-flex h-2.5 w-2.5 rounded-full ${source === "live" ? "bg-emerald-500" : "bg-amber-500"}`;
+            setStageHighlights(payload);
+            appendActivityLine(payload, source);
+            resetProgressWatch(payload);
+
+            persistLastTask(currentTaskId, {
+                status: payload.status,
+                fileSizeBytes: payload.fileSizeBytes,
+                pageCount: payload.filePageCount,
+                progressPercentage: payload.progressPercentage,
+                progressMessage: payload.progressMessage,
+                monitorMode: source,
+            });
+
+            if (isTerminalStatus(payload.status)) {
+                setResult(
+                    `<div class="font-medium text-slate-900 mb-1">Task ${payload.status}</div>` +
+                    `<div class="text-slate-700">Monitoring stopped at terminal state.</div>`
+                );
+                stopTaskMonitoring();
+                return;
+            }
+
+            setResult(
+                `<div class="font-medium text-slate-900 mb-1">Live progress: ${progress}%</div>` +
+                `<div class="text-slate-700">Status: <span class="capitalize">${payload.status}</span></div>`
+            );
+        }
+
+        function startPollingFallback(taskId, reason = "") {
+            stopTaskMonitoring();
+            monitorMode = "polling";
+            startStaleWatchdog(taskId);
+
+            const statusMessage = reason
+                ? `Live monitor unavailable (${reason}). Falling back to polling.`
+                : "Live monitor unavailable. Falling back to polling.";
+            setResult(statusMessage);
+
+            const pollOnce = async () => {
+                if (!currentTaskId || currentTaskId !== taskId) {
+                    return;
+                }
+
+                try {
+                    setStatusLoading(true, "Polling...", "Refresh now");
+                    const payload = await fetchTaskStatus(taskId);
+                    renderTaskStatus(payload, "poll");
+
+                    if (!isTerminalStatus(payload.status)) {
+                        pollingTimer = setTimeout(pollOnce, POLLING_INTERVAL_MS);
+                    }
+                } catch (error) {
+                    setStatusOutput(error.message || "Polling failed.");
+                    pollingTimer = setTimeout(pollOnce, POLLING_INTERVAL_MS);
+                } finally {
+                    setStatusLoading(false, "Polling...", "Refresh now");
+                }
+            };
+
+            pollOnce();
+        }
+
+        function handleSseChunk(rawChunk, onPayload) {
+            const lines = rawChunk.split(/\r?\n/);
+            const dataLines = [];
+
+            for (const line of lines) {
+                if (line.startsWith("data:")) {
+                    dataLines.push(line.slice(5).trimStart());
+                }
+            }
+
+            if (!dataLines.length) {
+                return;
+            }
+
+            const payloadText = dataLines.join("\n");
+            const payload = JSON.parse(payloadText);
+            onPayload(payload);
+        }
+
+        async function startLiveMonitor(taskId) {
+            stopTaskMonitoring();
+            monitorMode = "live";
+            streamAbortController = new AbortController();
+            liveIndicator.className = "inline-flex h-2.5 w-2.5 rounded-full bg-emerald-500";
+            startStaleWatchdog(taskId);
+
+            setStatusLoading(true, "Connecting live...", "Refresh now");
+            setStatusOutput("Connecting live monitor...");
+
+            try {
+                const response = await fetch(`/api/v1/tasks/${encodeURIComponent(taskId)}/stream`, {
+                    method: "GET",
+                    headers: {
+                        "Authorization": `Bearer ${token}`,
+                        "Accept": "text/event-stream",
+                    },
+                    signal: streamAbortController.signal,
+                });
+
+                if (!response.ok) {
+                    const payload = await response.json().catch(() => ({}));
+                    throw new Error(payload?.details || payload?.detail || "Failed to start live monitor");
+                }
+
+                if (!response.body) {
+                    throw new Error("Streaming is not supported by this browser response.");
+                }
+
+                setStatusLoading(false, "Connecting live...", "Refresh now");
+
+                const reader = response.body.getReader();
+                const decoder = new TextDecoder();
+                let buffer = "";
+
+                while (true) {
+                    const { value, done } = await reader.read();
+                    if (done) {
+                        break;
+                    }
+
+                    buffer += decoder.decode(value, { stream: true });
+                    const chunks = buffer.split(/\r?\n\r?\n/);
+                    buffer = chunks.pop() || "";
+
+                    for (const chunk of chunks) {
+                        handleSseChunk(chunk, (payload) => {
+                            if (!currentTaskId || currentTaskId !== taskId) {
+                                return;
+                            }
+                            renderTaskStatus(payload, "live");
+                        });
+                    }
+                }
+
+                if (!isTerminalStatus((getLastTask() || {}).status)) {
+                    throw new Error("Live monitor disconnected.");
+                }
+            } catch (error) {
+                if (streamAbortController?.signal.aborted) {
+                    return;
+                }
+                startPollingFallback(taskId, error.message || "stream_error");
+            } finally {
+                setStatusLoading(false, "Connecting live...", "Refresh now");
+            }
+        }
+
         uploadForm.addEventListener("submit", async (event) => {
             event.preventDefault();
 
@@ -285,6 +727,7 @@
 
             try {
                 setUploadLoading(true, "Uploading...");
+                stopTaskMonitoring();
                 currentTaskId = null;
                 setStatusOutput("");
                 clearLastTask();
@@ -329,6 +772,8 @@
                 msg += `<div><span class="font-medium">Size:</span> ${fileSizeMB} MB</div>`;
                 msg += `</div>`;
                 setResult(msg);
+
+                await startLiveMonitor(currentTaskId);
             } catch (error) {
                 setResult(error.message || "Upload workflow failed.", true);
             } finally {
@@ -346,7 +791,7 @@
                 setStatusLoading(true);
                 setStatusOutput("Fetching task status...");
                 const payload = await fetchTaskStatus(currentTaskId);
-                setStatusOutput(JSON.stringify(payload, null, 2));
+                renderTaskStatus(payload, monitorMode);
             } catch (error) {
                 setStatusOutput(error.message || "Failed to check task status.");
             } finally {
@@ -355,6 +800,7 @@
         });
 
         clearBtn.addEventListener("click", () => {
+            stopTaskMonitoring();
             fileInput.value = "";
             currentTaskId = null;
             clearLastTask();
@@ -364,6 +810,7 @@
         });
 
         logoutBtn.addEventListener("click", () => {
+            stopTaskMonitoring();
             clearLastTask();
             localStorage.removeItem("authToken");
             window.location.href = "/ui/auth";
@@ -382,13 +829,7 @@
             setResult(`<div class="font-medium text-slate-700">↻ Restored task <code class="text-xs bg-slate-200 px-1.5 py-0.5 rounded">${shortId}...</code></div>`);
 
             try {
-                setStatusOutput("Fetching status...");
-                const payload = await fetchTaskStatus(currentTaskId);
-                setStatusOutput(JSON.stringify(payload, null, 2));
-                persistLastTask(currentTaskId, {
-                    status: payload.status,
-                    fileSizeBytes: payload.fileSizeBytes,
-                });
+                await startLiveMonitor(currentTaskId);
             } catch (error) {
                 setStatusOutput(error.message || "Failed to restore task status.");
             }

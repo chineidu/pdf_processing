@@ -1,8 +1,7 @@
-# type: ignore
 import asyncio
 from logging.config import fileConfig
 
-from sqlalchemy import pool
+from sqlalchemy import MetaData, pool
 from sqlalchemy.engine.base import Connection
 from sqlalchemy.ext.asyncio import async_engine_from_config
 
@@ -27,13 +26,25 @@ if config.config_file_name is not None:
 # for 'autogenerate' support
 # from myapp import mymodel
 # target_metadata = mymodel.Base.metadata
-# ============ Add metadata ============
-target_metadata = Base.metadata
+# ============ Filter out unneeded metadata ============
+excluded_tables: set[str] = {"celery_taskmeta", "celery_tasksetmeta"}
+# Only include tables not in excluded_tables for Alembic migrations
+filtered_metadata = MetaData()
+for table_name, table in Base.metadata.tables.items():
+    if table_name not in excluded_tables:
+        table.to_metadata(filtered_metadata)
+target_metadata = filtered_metadata
 
-# other values from the config, defined by the needs of env.py,
-# can be acquired:
-# my_important_option = config.get_main_option("my_important_option")
-# ... etc.
+
+def include_object(_object, name, type_, _reflected, _compare_to):  # noqa: ANN001, ANN201
+    """Filter out non-managed tables from Alembic autogeneration."""
+    # Why both filters:
+    # 1) `target_metadata` filtering limits what we manage from ORM metadata.
+    # 2) `include_object` also filters reflected DB objects during compare.
+    # Without (2), Alembic may still detect unmanaged reflected tables as "removed".
+    if type_ == "table" and name in excluded_tables:
+        return False
+    return True
 
 
 def run_migrations_offline() -> None:
@@ -52,6 +63,7 @@ def run_migrations_offline() -> None:
     context.configure(
         url=url,
         target_metadata=target_metadata,
+        include_object=include_object,
         literal_binds=True,
         dialect_opts={"paramstyle": "named"},
     )
@@ -74,7 +86,11 @@ def _do_run_migrations(connection: Connection) -> None:
         connection: Connection
             An active asyncpg connection wrapped by SQLAlchemy's AsyncEngine.
     """
-    context.configure(connection=connection, target_metadata=target_metadata)
+    context.configure(
+        connection=connection,
+        target_metadata=target_metadata,
+        include_object=include_object,
+    )
 
     with context.begin_transaction():
         context.run_migrations()

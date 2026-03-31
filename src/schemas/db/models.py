@@ -10,6 +10,7 @@ from src.schemas.types import (
     MimeTypeEnum,
     RoleTypeEnum,
     StatusTypeEnum,
+    TaskProgressMessageEnum,
     TierEnum,
     UserStatusEnum,
 )
@@ -203,11 +204,17 @@ class MetadataResult(TypedDict, total=False):
         Reason for early termination or special handling.
     file_size_bytes : int | None
         Size of the uploaded file in bytes.
+    progress_percentage : int | None
+        Coarse task progress percentage from 0 to 100.
+    progress_message : TaskProgressMessageEnum | None
+        Coarse task progress phase label.
     """
 
     page_count: int | None
     reason: str | None
     file_size_bytes: int | None
+    progress_percentage: int | None
+    progress_message: TaskProgressMessageEnum | None
 
 
 class TaskSchema(BaseSchema):

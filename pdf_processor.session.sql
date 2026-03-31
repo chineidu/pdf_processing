@@ -1,2 +1,2 @@
 DELETE FROM tasks
-WHERE etag = 'ff51709a7663a2212b632206fd1415a5';
+WHERE etag = 'f29ba42296e8d721ef9680ab83a59bbc';

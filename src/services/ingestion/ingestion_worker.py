@@ -16,6 +16,7 @@ from src.celery_app.app import celery_app
 from src.celery_app.tasks.processor import (
     asend_failure_notification,
     asend_success_notification,
+    aupdate_task_progress,
 )
 from src.config import app_config, app_settings
 from src.db.models import DBTask, aget_db_session
@@ -26,6 +27,7 @@ from src.schemas.types import (
     IDEMPOTENCY_ACTIVE_STATUSES,
     DBUpdateReasonEnum,
     StatusTypeEnum,
+    TaskProgressMessageEnum,
 )
 from src.services.ingestion.base import BaseRabbitMQ
 from src.services.ingestion.utilities import (
@@ -34,7 +36,7 @@ from src.services.ingestion.utilities import (
 )
 from src.services.storage import S3StorageService
 from src.services.webhook import WebhookService
-from src.utilities.utils import MSGSPEC_DECODER
+from src.utilities.utils import json_loads
 
 webhook_service = WebhookService()
 
@@ -65,7 +67,7 @@ def _decode_file_result_key(raw: str | None, task_id: str) -> dict[str, str]:
     if not raw:
         return {}
     try:
-        return MSGSPEC_DECODER.decode(raw)
+        return json_loads(raw)
     except Exception as exc:
         logger.warning(
             f"Could not decode for task {task_id} "
@@ -157,6 +159,8 @@ async def _await_and_recheck_inflight(
                         page_count=updated_task.file_page_count,
                         file_size_bytes=updated_task.file_size_bytes,
                         reason=DBUpdateReasonEnum.IDENTICAL_DATA.value,
+                        progress_percentage=100,
+                        progress_message=TaskProgressMessageEnum.COMPLETED,
                     ),
                 },
                 add_completed_at=True,
@@ -196,6 +200,8 @@ async def _await_and_recheck_inflight(
                         page_count=updated_task.file_page_count,
                         file_size_bytes=updated_task.file_size_bytes,
                         reason=DBUpdateReasonEnum.IDENTICAL_DATA.value,
+                        progress_percentage=100,
+                        progress_message=TaskProgressMessageEnum.SKIPPED,
                     ),
                 },
                 add_completed_at=True,
@@ -365,6 +371,11 @@ async def aprocess_pdf_documents(
                 task_id=derived_task_id,
                 update_data={"status": StatusTypeEnum.VALIDATING.value},
             )
+            await aupdate_task_progress(
+                task_id=derived_task_id,
+                progress_percentage=15,
+                progress_message=TaskProgressMessageEnum.VALIDATING,
+            )
             # Yield to ensure DB update is committed before idempotency check
             await asyncio.sleep(0.1)
 
@@ -398,6 +409,8 @@ async def aprocess_pdf_documents(
                                 page_count=idempotent_task.file_page_count,
                                 file_size_bytes=idempotent_task.file_size_bytes,
                                 reason=DBUpdateReasonEnum.IDENTICAL_DATA.value,
+                                progress_percentage=100,
+                                progress_message=TaskProgressMessageEnum.COMPLETED,
                             ),
                         },
                         add_completed_at=True,
@@ -437,6 +450,8 @@ async def aprocess_pdf_documents(
                                 page_count=idempotent_task.file_page_count,
                                 file_size_bytes=idempotent_task.file_size_bytes,
                                 reason=DBUpdateReasonEnum.IDENTICAL_DATA.value,
+                                progress_percentage=100,
+                                progress_message=TaskProgressMessageEnum.SKIPPED,
                             ),
                         },
                         add_completed_at=True,
@@ -513,6 +528,11 @@ async def aprocess_pdf_documents(
                             queue=queue_info.queue_name,
                             priority=queue_info.priority,
                         )
+                        await aupdate_task_progress(
+                            task_id=derived_task_id,
+                            progress_percentage=35,
+                            progress_message=TaskProgressMessageEnum.PROCESSING_STARTED,
+                        )
                         logger.info(
                             f"Successfully dispatched in-flight recovery task {derived_task_id} "
                             f"to queue {queue_info.queue_name}"
@@ -553,6 +573,11 @@ async def aprocess_pdf_documents(
                         metadata=MetadataResult(**safety_metadata),
                         queue=queue_info.queue_name,
                         priority=queue_info.priority,
+                    )
+                    await aupdate_task_progress(
+                        task_id=derived_task_id,
+                        progress_percentage=35,
+                        progress_message=TaskProgressMessageEnum.PROCESSING_STARTED,
                     )
                 except Exception as e:
                     logger.error(
