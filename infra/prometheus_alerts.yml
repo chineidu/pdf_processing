@@ -1,0 +1,283 @@
+---
+# Prometheus Alerting Rules for SLO Violations
+# These rules trigger alerts when SLOs are violated based on burn rate
+
+groups:
+  - name: slo_alerts
+    interval: 1m
+    rules:
+      # ========================================
+      # HTTP API SLO Alerts
+      # ========================================
+
+      # Fast burn alert: HTTP error rate exceeds 1% for 1 hour (14x daily burn)
+      # For 99% SLO: monthly error budget is 0.01, so 14x burn = 0.14 errors over 1 hour
+      - alert: HTTPErrorRateFastBurn
+        expr: |
+          (sum(rate(http_request_errors_total[1h])) / sum(rate(http_requests_total[1h]))) > 0.01
+        for: 5m
+        labels:
+          severity: critical
+          slo: http_api
+          burn_rate: fast
+        annotations:
+          summary: "HTTP API error rate exceeds SLO (fast burn)"
+          description: "HTTP error rate is {{ $value | humanizePercentage }} over the last 1 hour. SLO target is < 1%. Investigating fast burn."
+          runbook_url: "https://wiki.example.com/runbooks/http-errors"
+
+      # Slow burn alert: HTTP error rate exceeds 0.15% for 6 hours (2x daily burn)
+      - alert: HTTPErrorRateSlowBurn
+        expr: |
+          (sum(rate(http_request_errors_total[6h])) / sum(rate(http_requests_total[6h]))) > 0.0015
+        for: 30m
+        labels:
+          severity: warning
+          slo: http_api
+          burn_rate: slow
+        annotations:
+          summary: "HTTP API error rate exceeds SLO (slow burn)"
+          description: "HTTP error rate is {{ $value | humanizePercentage }} over the last 6 hours. SLO target is < 1%. Slow burn but trending toward violation."
+          runbook_url: "https://wiki.example.com/runbooks/http-errors"
+
+      # HTTP error rate by endpoint category - fast burn
+      - alert: HTTPErrorRateByEndpointFastBurn
+        expr: |
+          (sum(rate(http_request_errors_total{endpoint_category!="observability"}[1h])) by (endpoint_category))
+          /
+          (sum(rate(http_requests_total{endpoint_category!="observability"}[1h])) by (endpoint_category)) > 0.01
+        for: 5m
+        labels:
+          severity: critical
+          slo: http_api
+          burn_rate: fast
+        annotations:
+          summary: "HTTP error rate exceeds SLO for {{ $labels.endpoint_category }} (fast burn)"
+          description: "{{ $labels.endpoint_category }} error rate is {{ $value | humanizePercentage }} over 1 hour."
+
+      # HTTP latency alert: p95 response time exceeds threshold
+      - alert: HTTPLatencyP95High
+        expr: |
+          histogram_quantile(0.95, sum(rate(http_request_latency_seconds_bucket[5m])) by (le)) > 0.5
+        for: 10m
+        labels:
+          severity: warning
+          slo: http_api
+          metric: latency
+        annotations:
+          summary: "HTTP p95 latency exceeds threshold"
+          description: "HTTP p95 response time is {{ $value | humanizeDuration }} (threshold: 500ms)"
+
+      # HTTP latency by endpoint category - SLO violation
+      - alert: HTTPLatencyP95ByEndpointHigh
+        expr: |
+          histogram_quantile(0.95, sum(rate(http_request_latency_seconds_bucket[5m])) by (le, endpoint_category)) > 0.5
+        for: 10m
+        labels:
+          severity: warning
+          slo: http_api
+          metric: latency
+        annotations:
+          summary: "HTTP p95 latency exceeds threshold for {{ $labels.endpoint_category }}"
+          description: "{{ $labels.endpoint_category }} p95 latency is {{ $value | humanizeDuration }}"
+
+      # ========================================
+      # Celery Task SLO Alerts
+      # ========================================
+
+      # Fast burn alert: Celery task failure rate exceeds 1% for 1 hour
+      - alert: CeleryFailureRateFastBurn
+        expr: |
+          (sum(rate(celery_tasks_failed_total[1h])) / sum(rate(celery_tasks_started_total[1h]))) > 0.01
+        for: 5m
+        labels:
+          severity: critical
+          slo: celery_tasks
+          burn_rate: fast
+        annotations:
+          summary: "Celery task failure rate exceeds SLO (fast burn)"
+          description: "Celery task failure rate is {{ $value | humanizePercentage }} over 1 hour. SLO target is < 1%."
+          runbook_url: "https://wiki.example.com/runbooks/celery-failures"
+
+      # Slow burn alert: Celery task failure rate exceeds 0.15% for 6 hours
+      - alert: CeleryFailureRateSlowBurn
+        expr: |
+          (sum(rate(celery_tasks_failed_total[6h])) / sum(rate(celery_tasks_started_total[6h]))) > 0.0015
+        for: 30m
+        labels:
+          severity: warning
+          slo: celery_tasks
+          burn_rate: slow
+        annotations:
+          summary: "Celery task failure rate exceeds SLO (slow burn)"
+          description: "Celery task failure rate is {{ $value | humanizePercentage }} over 6 hours. SLO target is < 1%."
+
+      # Celery failure rate by task type - fast burn
+      - alert: CeleryFailureRateByTaskFastBurn
+        expr: |
+          (sum(rate(celery_tasks_failed_total[1h])) by (task_name))
+          /
+          (sum(rate(celery_tasks_started_total[1h])) by (task_name)) > 0.05
+        for: 5m
+        labels:
+          severity: critical
+          slo: celery_tasks
+          burn_rate: fast
+        annotations:
+          summary: "Celery {{ $labels.task_name }} failure rate is high (fast burn)"
+          description: "{{ $labels.task_name }} failure rate is {{ $value | humanizePercentage }} over 1 hour."
+
+      # Celery task duration p95 exceeds threshold
+      - alert: CeleryTaskDurationP95High
+        expr: |
+          histogram_quantile(0.95, sum(rate(celery_task_duration_seconds_bucket[5m])) by (le)) > 300
+        for: 10m
+        labels:
+          severity: warning
+          slo: celery_tasks
+          metric: duration
+        annotations:
+          summary: "Celery task p95 duration exceeds threshold"
+          description: "Celery task p95 duration is {{ $value | humanizeDuration }} (threshold: 5m)"
+
+      # ========================================
+      # Webhook SLO Alerts
+      # ========================================
+
+      # Fast burn alert: Webhook delivery failure rate exceeds 5% for 1 hour
+      - alert: WebhookDeliveryFailureRateFastBurn
+        expr: |
+          (sum(rate(webhook_failures_total[1h])) / sum(rate(webhook_attempts_total[1h]))) > 0.05
+        for: 5m
+        labels:
+          severity: critical
+          slo: webhooks
+          burn_rate: fast
+        annotations:
+          summary: "Webhook delivery failure rate exceeds threshold (fast burn)"
+          description: "Webhook delivery failure rate is {{ $value | humanizePercentage }} over 1 hour. Target: < 5%."
+          runbook_url: "https://wiki.example.com/runbooks/webhook-failures"
+
+      # Slow burn alert: Webhook delivery failure rate exceeds 2% for 6 hours
+      - alert: WebhookDeliveryFailureRateSlowBurn
+        expr: |
+          (sum(rate(webhook_failures_total[6h])) / sum(rate(webhook_attempts_total[6h]))) > 0.02
+        for: 30m
+        labels:
+          severity: warning
+          slo: webhooks
+          burn_rate: slow
+        annotations:
+          summary: "Webhook delivery failure rate exceeds threshold (slow burn)"
+          description: "Webhook delivery failure rate is {{ $value | humanizePercentage }} over 6 hours. Target: < 5%."
+
+      # Webhook failure by event type
+      - alert: WebhookDeliveryFailureByEventType
+        expr: |
+          (sum(rate(webhook_failures_total[1h])) by (event_type))
+          /
+          (sum(rate(webhook_attempts_total[1h])) by (event_type)) > 0.1
+        for: 5m
+        labels:
+          severity: warning
+          slo: webhooks
+        annotations:
+          summary: "Webhook delivery failure rate high for {{ $labels.event_type }}"
+          description: "{{ $labels.event_type }} webhook failure rate is {{ $value | humanizePercentage }} over 1 hour."
+
+      # Webhook delivery latency p95 exceeds threshold
+      - alert: WebhookDeliveryLatencyP95High
+        expr: |
+          histogram_quantile(0.95, sum(rate(webhook_delivery_latency_seconds_bucket[5m])) by (le)) > 5
+        for: 10m
+        labels:
+          severity: warning
+          slo: webhooks
+          metric: latency
+        annotations:
+          summary: "Webhook delivery p95 latency exceeds threshold"
+          description: "Webhook p95 delivery latency is {{ $value | humanizeDuration }} (threshold: 5s)"
+
+      # ========================================
+      # Error Budget Depletion Alerts
+      # ========================================
+
+      # HTTP error budget depleting fast
+      - alert: HTTPErrorBudgetDepletingFast
+        expr: |
+          slo:http_error_budget_remaining:monthly < 50
+        for: 1h
+        labels:
+          severity: warning
+          slo: http_api
+          metric: error_budget
+        annotations:
+          summary: "HTTP error budget is depleting rapidly"
+          description: "HTTP error budget remaining: {{ $value | humanize }}%. At current burn rate, budget will be exhausted in < 2 weeks."
+
+      # HTTP error budget critically low
+      - alert: HTTPErrorBudgetCriticallyLow
+        expr: |
+          slo:http_error_budget_remaining:monthly < 10
+        for: 30m
+        labels:
+          severity: critical
+          slo: http_api
+          metric: error_budget
+        annotations:
+          summary: "HTTP error budget is critically low"
+          description: "HTTP error budget remaining: {{ $value | humanize }}%. SLO will be violated soon if errors continue."
+
+      # Celery error budget depleting fast
+      - alert: CeleryErrorBudgetDepletingFast
+        expr: |
+          slo:celery_error_budget_remaining:monthly < 50
+        for: 1h
+        labels:
+          severity: warning
+          slo: celery_tasks
+          metric: error_budget
+        annotations:
+          summary: "Celery error budget is depleting rapidly"
+          description: "Celery error budget remaining: {{ $value | humanize }}%. At current burn rate, budget will be exhausted in < 2 weeks."
+
+      # Webhook error budget depleting fast
+      - alert: WebhookErrorBudgetDepletingFast
+        expr: |
+          slo:webhook_error_budget_remaining:monthly < 50
+        for: 1h
+        labels:
+          severity: warning
+          slo: webhooks
+          metric: error_budget
+        annotations:
+          summary: "Webhook error budget is depleting rapidly"
+          description: "Webhook error budget remaining: {{ $value | humanize }}%. At current burn rate, budget will be exhausted in < 2 weeks."
+
+      # ========================================
+      # Infrastructure Health Alerts
+      # ========================================
+
+      # Multiple services failing simultaneously
+      - alert: MultipleServiceFailures
+        expr: |
+          (count(slo:http_error_rate:5m > 0.01) > 0)
+          and (count(slo:celery_failure_rate:5m > 0.01) > 0)
+        for: 5m
+        labels:
+          severity: critical
+          alert_type: multi_service
+        annotations:
+          summary: "Multiple services are experiencing elevated error rates"
+          description: "Both HTTP API and Celery tasks are experiencing SLO violations. This suggests a systemic issue."
+
+      # No metrics being collected
+      - alert: MetricsNotAvailable
+        expr: |
+          up{job="prometheus"} == 0
+        for: 5m
+        labels:
+          severity: critical
+          alert_type: observability
+        annotations:
+          summary: "Prometheus is not available"
+          description: "Prometheus metrics collection has stopped. Cannot monitor SLOs."

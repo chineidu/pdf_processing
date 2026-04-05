@@ -1,0 +1,86 @@
+---
+global:
+  resolve_timeout: 5m
+
+route:
+  receiver: default
+  group_by: [alertname, slo]
+  group_wait: 10s
+  group_interval: 2m
+  repeat_interval: 2h
+  routes:
+    - matchers:
+        - severity="critical"
+      receiver: critical
+      continue: true
+
+    - matchers:
+        - burn_rate="fast"
+      receiver: slo_fast_burn
+
+    - matchers:
+        - burn_rate="slow"
+      receiver: slo_slow_burn
+
+    - matchers:
+        - metric="error_budget"
+      receiver: error_budget
+
+    - matchers:
+        - metric="latency"
+      receiver: latency
+
+    - matchers:
+        - alert_type="observability"
+      receiver: observability
+
+receivers:
+  - name: default
+
+  # These webhook endpoints are placeholders.
+  # Replace with your real notification gateways (Slack/PagerDuty/email bridge).
+  - name: critical
+    webhook_configs:
+      - url: http://host.docker.internal:19093/critical
+        send_resolved: true
+
+  - name: slo_fast_burn
+    webhook_configs:
+      - url: http://host.docker.internal:19093/slo-fast-burn
+        send_resolved: true
+
+  - name: slo_slow_burn
+    webhook_configs:
+      - url: http://host.docker.internal:19093/slo-slow-burn
+        send_resolved: true
+
+  - name: error_budget
+    webhook_configs:
+      - url: http://host.docker.internal:19093/error-budget
+        send_resolved: true
+
+  - name: latency
+    webhook_configs:
+      - url: http://host.docker.internal:19093/latency
+        send_resolved: true
+
+  - name: observability
+    webhook_configs:
+      - url: http://host.docker.internal:19093/observability
+        send_resolved: true
+
+inhibit_rules:
+  - source_matchers:
+      - burn_rate="fast"
+      - severity="critical"
+    target_matchers:
+      - burn_rate="slow"
+    equal: [slo]
+
+  - source_matchers:
+      - burn_rate="fast"
+      - severity="critical"
+    target_matchers:
+      - metric="latency"
+      - severity="warning"
+    equal: [slo]

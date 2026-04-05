@@ -1,0 +1,273 @@
+---
+# Prometheus Recording Rules for SLO Tracking
+# These rules compute important SLI metrics from raw Prometheus metrics
+# Rules are evaluated every 15 seconds by default
+
+groups:
+  - name: slo_recording_rules
+    interval: 15s
+    rules:
+      # ========================================
+      # HTTP API SLI Metrics (5-minute windows)
+      # ========================================
+
+      # Total HTTP requests in 5-minute window
+      - record: slo:http_requests:5m
+        expr: sum(rate(http_requests_total[5m]))
+
+      # HTTP error requests in 5-minute window (4xx and 5xx)
+      - record: slo:http_errors:5m
+        expr: sum(rate(http_request_errors_total[5m]))
+
+      # HTTP error rate in 5-minute window
+      - record: slo:http_error_rate:5m
+        expr: |
+          (slo:http_errors:5m / slo:http_requests:5m) > 0
+
+      # HTTP error rate by endpoint in 5-minute window
+      - record: slo:http_error_rate_by_endpoint:5m
+        expr: |
+          sum(rate(http_request_errors_total[5m])) by (endpoint)
+          /
+          sum(rate(http_requests_total[5m])) by (endpoint)
+
+      # HTTP error rate by endpoint category in 5-minute window
+      - record: slo:http_error_rate_by_category:5m
+        expr: |
+          sum(rate(http_request_errors_total[5m])) by (endpoint_category)
+          /
+          sum(rate(http_requests_total[5m])) by (endpoint_category)
+
+      # HTTP p95 latency in 5-minute window
+      - record: slo:http_latency_p95:5m
+        expr: |
+          histogram_quantile(0.95, sum(rate(http_request_latency_seconds_bucket[5m])) by (le))
+
+      # HTTP p95 latency by endpoint in 5-minute window
+      - record: slo:http_latency_p95_by_endpoint:5m
+        expr: |
+          histogram_quantile(0.95, sum(rate(http_request_latency_seconds_bucket[5m])) by (le, endpoint))
+
+      # HTTP p95 latency by endpoint category in 5-minute window
+      - record: slo:http_latency_p95_by_category:5m
+        expr: |
+          histogram_quantile(0.95, sum(rate(http_request_latency_seconds_bucket[5m])) by (le, endpoint_category))
+
+      # ========================================
+      # HTTP API SLI Metrics (30-minute windows)
+      # ========================================
+
+      # HTTP error rate in 30-minute window
+      - record: slo:http_error_rate:30m
+        expr: |
+          sum(rate(http_request_errors_total[30m]))
+          /
+          sum(rate(http_requests_total[30m])) > 0
+
+      # HTTP error rate by endpoint category in 30-minute window
+      - record: slo:http_error_rate_by_category:30m
+        expr: |
+          sum(rate(http_request_errors_total[30m])) by (endpoint_category)
+          /
+          sum(rate(http_requests_total[30m])) by (endpoint_category)
+
+      # HTTP p95 latency in 30-minute window
+      - record: slo:http_latency_p95:30m
+        expr: |
+          histogram_quantile(0.95, sum(rate(http_request_latency_seconds_bucket[30m])) by (le))
+
+      # HTTP p95 latency by endpoint category in 30-minute window
+      - record: slo:http_latency_p95_by_category:30m
+        expr: |
+          histogram_quantile(0.95, sum(rate(http_request_latency_seconds_bucket[30m])) by (le, endpoint_category))
+
+      # ========================================
+      # Celery Task SLI Metrics (5-minute windows)
+      # ========================================
+
+      # Celery task success rate in 5-minute window
+      - record: slo:celery_success_rate:5m
+        expr: |
+          (sum(rate(celery_tasks_completed_total[5m])))
+          /
+          (sum(rate(celery_tasks_started_total[5m]))) > 0
+
+      # Celery task success rate by task type in 5-minute window
+      - record: slo:celery_success_rate_by_task:5m
+        expr: |
+          sum(rate(celery_tasks_completed_total[5m])) by (task_name)
+          /
+          sum(rate(celery_tasks_started_total[5m])) by (task_name)
+
+      # Celery task failure rate in 5-minute window
+      - record: slo:celery_failure_rate:5m
+        expr: |
+          sum(rate(celery_tasks_failed_total[5m]))
+          /
+          sum(rate(celery_tasks_started_total[5m])) > 0
+
+      # Celery task failure rate by task type in 5-minute window
+      - record: slo:celery_failure_rate_by_task:5m
+        expr: |
+          sum(rate(celery_tasks_failed_total[5m])) by (task_name)
+          /
+          sum(rate(celery_tasks_started_total[5m])) by (task_name)
+
+      # Celery p95 task duration in 5-minute window
+      - record: slo:celery_duration_p95:5m
+        expr: |
+          histogram_quantile(0.95, sum(rate(celery_task_duration_seconds_bucket[5m])) by (le))
+
+      # Celery p95 task duration by task type in 5-minute window
+      - record: slo:celery_duration_p95_by_task:5m
+        expr: |
+          histogram_quantile(0.95, sum(rate(celery_task_duration_seconds_bucket[5m])) by (le, task_name))
+
+      # ========================================
+      # Celery Task SLI Metrics (30-minute windows)
+      # ========================================
+
+      # Celery task success rate in 30-minute window
+      - record: slo:celery_success_rate:30m
+        expr: |
+          sum(rate(celery_tasks_completed_total[30m]))
+          /
+          sum(rate(celery_tasks_started_total[30m])) > 0
+
+      # Celery task success rate by task type in 30-minute window
+      - record: slo:celery_success_rate_by_task:30m
+        expr: |
+          sum(rate(celery_tasks_completed_total[30m])) by (task_name)
+          /
+          sum(rate(celery_tasks_started_total[30m])) by (task_name)
+
+      # Celery task failure rate in 30-minute window
+      - record: slo:celery_failure_rate:30m
+        expr: |
+          sum(rate(celery_tasks_failed_total[30m]))
+          /
+          sum(rate(celery_tasks_started_total[30m])) > 0
+
+      # ========================================
+      # Webhook SLI Metrics (5-minute windows)
+      # ========================================
+
+      # Webhook delivery success rate in 5-minute window
+      - record: slo:webhook_delivery_rate:5m
+        expr: |
+          sum(rate(webhook_successes_total[5m]))
+          /
+          sum(rate(webhook_attempts_total[5m])) > 0
+
+      # Webhook delivery success rate by event type in 5-minute window
+      - record: slo:webhook_delivery_rate_by_event:5m
+        expr: |
+          sum(rate(webhook_successes_total[5m])) by (event_type)
+          /
+          sum(rate(webhook_attempts_total[5m])) by (event_type)
+
+      # Webhook failure rate in 5-minute window
+      - record: slo:webhook_failure_rate:5m
+        expr: |
+          sum(rate(webhook_failures_total[5m]))
+          /
+          sum(rate(webhook_attempts_total[5m])) > 0
+
+      # Webhook p95 delivery latency in 5-minute window
+      - record: slo:webhook_delivery_latency_p95:5m
+        expr: |
+          histogram_quantile(0.95, sum(rate(webhook_delivery_latency_seconds_bucket[5m])) by (le))
+
+      # Webhook p95 delivery latency by event type in 5-minute window
+      - record: slo:webhook_delivery_latency_p95_by_event:5m
+        expr: |
+          histogram_quantile(0.95, sum(rate(webhook_delivery_latency_seconds_bucket[5m])) by (le, event_type))
+
+      # ========================================
+      # Webhook SLI Metrics (30-minute windows)
+      # ========================================
+
+      # Webhook delivery success rate in 30-minute window
+      - record: slo:webhook_delivery_rate:30m
+        expr: |
+          sum(rate(webhook_successes_total[30m]))
+          /
+          sum(rate(webhook_attempts_total[30m])) > 0
+
+      # Webhook delivery success rate by event type in 30-minute window
+      - record: slo:webhook_delivery_rate_by_event:30m
+        expr: |
+          sum(rate(webhook_successes_total[30m])) by (event_type)
+          /
+          sum(rate(webhook_attempts_total[30m])) by (event_type)
+
+      # Webhook failure rate in 30-minute window
+      - record: slo:webhook_failure_rate:30m
+        expr: |
+          sum(rate(webhook_failures_total[30m]))
+          /
+          sum(rate(webhook_attempts_total[30m])) > 0
+
+      # ========================================
+      # Composite SLO Metrics
+      # ========================================
+
+      # Overall service health: combination of HTTP, Celery, and Webhook SLIs
+      - record: slo:service_health:5m
+        expr: |
+          ((slo:http_error_rate:5m < 0.01) and (slo:celery_failure_rate:5m < 0.01) and (slo:webhook_failure_rate:5m < 0.01))
+
+      # Overall service health in 30-minute window
+      - record: slo:service_health:30m
+        expr: |
+          ((slo:http_error_rate:30m < 0.01) and (slo:celery_failure_rate:30m < 0.01) and (slo:webhook_failure_rate:30m < 0.01))
+
+      # ========================================
+      # Error Budget Tracking (Monthly)
+      # ========================================
+
+      # HTTP error budget consumed: for 99% SLO, we're allowed 0.01 error rate
+      - record: slo:http_error_budget_consumed:monthly
+        expr: |
+          (sum(increase(http_request_errors_total[30d])))
+          /
+          (sum(increase(http_requests_total[30d])))
+
+      # HTTP error budget remaining percentage
+      - record: slo:http_error_budget_remaining:monthly
+        expr: |
+          clamp_min(1 - slo:http_error_budget_consumed:monthly, 0) * 100
+
+      # Celery error budget consumed
+      - record: slo:celery_error_budget_consumed:monthly
+        expr: |
+          (sum(increase(celery_tasks_failed_total[30d])))
+          /
+          (sum(increase(celery_tasks_started_total[30d])))
+
+      # Celery error budget remaining percentage
+      - record: slo:celery_error_budget_remaining:monthly
+        expr: |
+          clamp_min(1 - slo:celery_error_budget_consumed:monthly, 0) * 100
+
+      # Webhook error budget consumed
+      - record: slo:webhook_error_budget_consumed:monthly
+        expr: |
+          (sum(increase(webhook_failures_total[30d])))
+          /
+          (sum(increase(webhook_attempts_total[30d])))
+
+      # Webhook error budget remaining percentage
+      - record: slo:webhook_error_budget_remaining:monthly
+        expr: |
+          clamp_min(1 - slo:webhook_error_budget_consumed:monthly, 0) * 100
+
+      # Overall error budget consumed
+      - record: slo:overall_error_budget_consumed:monthly
+        expr: |
+          (slo:http_error_budget_consumed:monthly + slo:celery_error_budget_consumed:monthly + slo:webhook_error_budget_consumed:monthly) / 3
+
+      # Overall error budget remaining percentage
+      - record: slo:overall_error_budget_remaining:monthly
+        expr: |
+          clamp_min(1 - slo:overall_error_budget_consumed:monthly, 0) * 100

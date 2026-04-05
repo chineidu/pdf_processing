@@ -13,9 +13,8 @@ from prometheus_fastapi_instrumentator import Instrumentator
 from src import create_logger
 from src.api.core.exceptions import BaseAPIError, api_error_handler
 from src.api.core.lifespan import lifespan
-from src.api.core.metrics import model_label
+from src.api.core.metrics import model_label, slo_metrics
 from src.api.core.middleware import MIDDLEWARE_STACK
-
 from src.api.routes import apikeys, auth, health, presigned_urls, tasks, ui
 from src.config import app_config, app_settings
 from src.observability.telemetry import setup_telemetry
@@ -101,6 +100,7 @@ def create_application() -> FastAPI:
         excluded_handlers=["/metrics", "/health", "/docs", "/redoc", "/openapi.json"],
     )
     instrumentator.add(model_label)
+    instrumentator.add(slo_metrics)
     instrumentator.instrument(app).expose(app)
 
     #  Setup OpenTelemetry
