@@ -190,6 +190,13 @@ class PriorityConfig:
 class QueueConfig:
     """Queue configuration dataclass."""
 
+    orchestration: str = field(
+        default="orchestration",
+        metadata={
+            "description": "Queue for orchestration tasks that block on chord completion"
+        },
+    )
+
     high_priority_ml: str = field(
         default="high_priority_ml",
         metadata={"description": "Queue for high priority machine learning tasks"},

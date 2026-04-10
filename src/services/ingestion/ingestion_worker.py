@@ -290,8 +290,8 @@ def dispatch_to_celery_process_data_task(
     etag: str,
     task_id: str,
     metadata: MetadataResult | None = None,
-    queue: str = "celery",
-    priority: int = 5,
+    processing_queue: str = "celery",
+    processing_priority: int = 5,
 ) -> None:
     """Synchronous function to send the task to Celery. This will be executed in a thread pool.
 
@@ -303,23 +303,28 @@ def dispatch_to_celery_process_data_task(
         The task identifier.
     metadata : MetadataResult | None, optional
         Additional metadata for the task, by default None
-    queue : str, optional
-        The queue to dispatch to, by default "celery"
-    priority : int, optional
+    processing_queue : str, optional
+        The queue that should execute chunk-processing work, by default "celery"
+    processing_priority : int, optional
         The priority level (1-10, where 10 is highest), by default 5
     """
+    orchestration_queue = app_config.queue_config.orchestration
     celery_app.send_task(
         "src.celery_app.tasks.processor.orchestrate_pdf_processing",
         kwargs={
             "task_id": task_id,
             "etag": etag,
             "metadata": metadata,
+            "processing_queue": processing_queue,
+            "processing_priority": processing_priority,
         },
-        queue=queue,
-        priority=priority,
+        queue=orchestration_queue,
+        routing_key=orchestration_queue,
+        priority=processing_priority,
     )
     logger.info(
-        f"Successfully dispatched Celery task for S3 key: {etag} to queue: {queue}"
+        f"Successfully dispatched orchestration task for S3 key: {etag} to queue: "
+        f"{orchestration_queue} (processing queue: {processing_queue})"
     )
 
 
@@ -344,7 +349,8 @@ async def aprocess_pdf_documents(
 
         for record in payload.records:
             etag: str = record.storage_entity.object.etag.replace('"', "").strip()
-            storage_key: str = record.storage_entity.object.key
+            raw_storage_key: str = record.storage_entity.object.key
+            storage_key: str = unquote(raw_storage_key)
             object_size_bytes: int | None = record.storage_entity.object.size
             derived_task_id: str | None = (
                 _extract_task_id_from_storage_key(storage_key) or task_id
@@ -525,8 +531,8 @@ async def aprocess_pdf_documents(
                             etag=etag,
                             task_id=derived_task_id,
                             metadata=MetadataResult(**metadata),
-                            queue=queue_info.queue_name,
-                            priority=queue_info.priority,
+                            processing_queue=queue_info.queue_name,
+                            processing_priority=queue_info.priority,
                         )
                         await aupdate_task_progress(
                             task_id=derived_task_id,
@@ -571,8 +577,8 @@ async def aprocess_pdf_documents(
                         etag=etag,
                         task_id=derived_task_id,
                         metadata=MetadataResult(**safety_metadata),
-                        queue=queue_info.queue_name,
-                        priority=queue_info.priority,
+                        processing_queue=queue_info.queue_name,
+                        processing_priority=queue_info.priority,
                     )
                     await aupdate_task_progress(
                         task_id=derived_task_id,
@@ -654,8 +660,8 @@ async def aprocess_pdf_documents(
                         etag=etag,
                         task_id=derived_task_id,
                         metadata=MetadataResult(**metadata),
-                        queue=queue_info.queue_name,
-                        priority=queue_info.priority,
+                        processing_queue=queue_info.queue_name,
+                        processing_priority=queue_info.priority,
                     )
 
                 except Exception as e:

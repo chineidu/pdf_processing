@@ -2,12 +2,12 @@ import os
 import time
 from typing import TYPE_CHECKING, Any
 
-import torch
 from celery.signals import (
     task_failure,
     task_postrun,
     task_prerun,
     worker_init,
+    worker_process_init,
     worker_ready,
     worker_shutdown,
 )
@@ -58,6 +58,51 @@ _task_start_times: dict[str, float] = {}
 _document_converter: "DocumentConverter | None" = None
 
 
+def _initialize_document_converter() -> None:
+    """Initialize the worker-scoped Docling converter once per process."""
+    global _document_converter
+
+    if _document_converter is not None:
+        return
+
+    from docling.datamodel.accelerator_options import (
+        AcceleratorDevice,
+        AcceleratorOptions,
+    )
+    from docling.datamodel.base_models import InputFormat
+    from docling.datamodel.pipeline_options import (
+        EasyOcrOptions,
+        PdfPipelineOptions,
+        TableStructureOptions,
+    )
+    from docling.document_converter import DocumentConverter, PdfFormatOption
+
+    from src.config.settings import _setup_environment
+
+    perform_ocr: bool = app_config.pdf_processing_config.perform_ocr
+    use_gpu: bool = app_config.pdf_processing_config.use_gpu
+
+    _setup_environment()
+
+    pipeline_options = PdfPipelineOptions()
+    pipeline_options.do_ocr = perform_ocr
+    pipeline_options.ocr_options = EasyOcrOptions()
+    pipeline_options.ocr_options.use_gpu = use_gpu
+    pipeline_options.table_structure_options = TableStructureOptions(
+        do_cell_matching=True
+    )
+    pipeline_options.accelerator_options = AcceleratorOptions(
+        num_threads=4, device=AcceleratorDevice.AUTO
+    )
+
+    _document_converter = DocumentConverter(
+        format_options={
+            InputFormat.PDF: PdfFormatOption(pipeline_options=pipeline_options),
+        }
+    )
+    logger.info(f"Docling DocumentConverter initialized for worker {os.getpid()}.")
+
+
 # ===========================================
 # ======= Worker Lifecycle Management =======
 # ===========================================
@@ -75,53 +120,35 @@ def worker_init_handler(sender: Any | None = None, **kwargs: Any) -> None:  # no
     pass  # Model logic goes here if there's any.
 
 
+@worker_process_init.connect
+def on_worker_process_init(sender: Any | None = None, **kwargs: Any) -> None:  # noqa: ARG001
+    """Initialize Docling inside each worker process after fork.
+
+    Using worker_process_init instead of worker_ready ensures that model
+    initialization happens in the child process (after fork) rather than in
+    the main process (before fork). This prevents the macOS SIGABRT caused by
+    fork() being called after ObjC/CoreFoundation libraries are already loaded.
+    """
+    try:
+        _initialize_document_converter()
+    except Exception as e:
+        logger.error(f"Failed to initialize DocumentConverter: {e}", exc_info=True)
+        raise
+
+
 @worker_ready.connect
 def on_worker_ready(sender: Any | None = None, **kwargs: Any) -> None:  # noqa: ARG001
     """Callback function triggered when a Celery worker is ready to accept tasks."""
     logger.info(f"Celery worker {os.getpid()} is ready to accept tasks.")
 
-    global _document_converter
-
-    try:
-        from docling.datamodel.accelerator_options import (
-            AcceleratorDevice,
-            AcceleratorOptions,
-        )
-        from docling.datamodel.base_models import InputFormat
-        from docling.datamodel.pipeline_options import (
-            EasyOcrOptions,
-            PdfPipelineOptions,
-            TableStructureOptions,
-        )
-        from docling.document_converter import DocumentConverter, PdfFormatOption
-
-        from src.config.settings import _setup_environment
-
-        PERFORM_OCR: bool = app_config.pdf_processing_config.perform_ocr
-        USE_GPU: bool = app_config.pdf_processing_config.use_gpu
-
-        _setup_environment()
-
-        pipeline_options = PdfPipelineOptions()
-        pipeline_options.do_ocr = PERFORM_OCR
-        pipeline_options.ocr_options = EasyOcrOptions()
-        pipeline_options.ocr_options.use_gpu = USE_GPU
-        pipeline_options.table_structure_options = TableStructureOptions(
-            do_cell_matching=True
-        )
-        pipeline_options.accelerator_options = AcceleratorOptions(
-            num_threads=4, device=AcceleratorDevice.AUTO
-        )
-
-        _document_converter = DocumentConverter(
-            format_options={
-                InputFormat.PDF: PdfFormatOption(pipeline_options=pipeline_options),
-            }
-        )
-        logger.info(f"Docling DocumentConverter initialized for worker {os.getpid()}.")
-    except Exception as e:
-        logger.error(f"Failed to initialize DocumentConverter: {e}", exc_info=True)
-        raise
+    # In non-prefork pools (e.g., threads), worker_process_init does not run per child.
+    pool_name = os.environ.get("CELERY_POOL", "").strip().lower()
+    if pool_name != "prefork":
+        try:
+            _initialize_document_converter()
+        except Exception as e:
+            logger.error(f"Failed to initialize DocumentConverter: {e}", exc_info=True)
+            raise
 
 
 @worker_shutdown.connect
@@ -133,6 +160,8 @@ def on_worker_shutdown(sender: Any | None = None, **kwargs: Any) -> None:  # noq
     _document_converter = None
 
     # Clean up GPU memory
+    import torch  # noqa: PLC0415  # lazy import to avoid loading MPS pre-fork
+
     if torch.cuda.is_available():
         torch.cuda.empty_cache()
         logger.info("GPU cache cleared on worker shutdown.")

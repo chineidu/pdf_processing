@@ -165,31 +165,31 @@ def extract_rate_limit_number(tier: TierEnum, default: int = 5) -> int:
     return int(result)
 
 
-def log_system_info() -> None:
+def log_system_info(include_gpu: bool = True) -> None:
     """
     Utility function to log system resource details for debugging and monitoring.
     It captures GPU details (if available), CPU info, memory usage, and container limits.
     """
-    # Rarely called: Importing torch here to avoid unnecessary overhead in non-GPU
-    # contexts
-    import torch
+    # 1. GPU Logic (optional to avoid pre-fork accelerator initialization)
+    if include_gpu:
+        # Rarely called: importing torch lazily avoids overhead in non-GPU contexts.
+        import torch
 
-    # 1. GPU Logic (Keep your existing CUDA check)
-    if torch.cuda.is_available():
-        try:
-            device_name = torch.cuda.get_device_name(0)
-            properties = torch.cuda.get_device_properties(0)
-            total_gb = properties.total_memory / (1024**3)
-            allocated_gb = torch.cuda.memory_allocated() / (1024**3)
-            reserved_gb = torch.cuda.memory_reserved() / (1024**3)
+        if torch.cuda.is_available():
+            try:
+                device_name = torch.cuda.get_device_name(0)
+                properties = torch.cuda.get_device_properties(0)
+                total_gb = properties.total_memory / (1024**3)
+                allocated_gb = torch.cuda.memory_allocated() / (1024**3)
+                reserved_gb = torch.cuda.memory_reserved() / (1024**3)
 
-            logger.info(f"🔥 CUDA GPU: {device_name} ({total_gb:.2f} GB total)")
-            logger.info(
-                f"   GPU RAM - Allocated: {allocated_gb:.2f}GB, Reserved: {reserved_gb:.2f}GB"
-            )
-            return
-        except Exception as e:
-            logger.warning(f"Failed to log GPU info: {e}")
+                logger.info(f"🔥 CUDA GPU: {device_name} ({total_gb:.2f} GB total)")
+                logger.info(
+                    f"   GPU RAM - Allocated: {allocated_gb:.2f}GB, Reserved: {reserved_gb:.2f}GB"
+                )
+                return
+            except Exception as e:
+                logger.warning(f"Failed to log GPU info: {e}")
 
     # 2. Process-Level Context (Critical for Threads/Celery)
     import platform

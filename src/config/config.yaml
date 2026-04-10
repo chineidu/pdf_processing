@@ -90,6 +90,7 @@ config:
       "/recommend": 4.0
 
   queue_config:
+    orchestration: orchestration # Queue for orchestration/chord coordinator tasks
     high_priority_ml: high_priority_ml # Queue for high priority machine learning tasks
     medium_priority_ml: medium_priority_ml # Queue for normal priority machine learning tasks
     low_priority_ml: low_priority_ml # Queue for low priority machine learning tasks
@@ -118,6 +119,8 @@ config:
       enable_utc: true
     # Task routing and queues
     task_routes:
+      src.celery_app.tasks.processor.orchestrate_pdf_processing:
+        { queue: "${config.queue_config.orchestration}" }
       src.celery_app.tasks.periodic.*:
         { queue: "${config.queue_config.cleanups}" }
 

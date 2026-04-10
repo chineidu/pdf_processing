@@ -67,6 +67,25 @@ def _get_task_routing_options(task: Any) -> dict[str, Any]:
     return options
 
 
+def _get_child_task_routing_options(
+    task: Any,
+    processing_queue: str | None = None,
+    processing_priority: int | None = None,
+) -> dict[str, Any]:
+    """Resolve routing for chunk/combine tasks independently of the parent queue."""
+
+    options = _get_task_routing_options(task)
+
+    if processing_queue:
+        options["queue"] = processing_queue
+        options["routing_key"] = processing_queue
+
+    if processing_priority is not None:
+        options["priority"] = int(processing_priority)
+
+    return options
+
+
 def _encode_processed_outputs(outputs: dict[str, bytes]) -> dict[str, str]:
     """Convert bytes outputs into base64 strings for broker-safe task payloads."""
     # Encode bytes to base64 strings so Celery/RabbitMQ can transport them safely
@@ -795,6 +814,8 @@ def orchestrate_pdf_processing(
     etag: str,
     task_id: str,
     metadata: MetadataResult | None = None,
+    processing_queue: str | None = None,
+    processing_priority: int | None = None,
 ) -> ProcessDataTaskResult:
     """Orchestrate chunk processing with Celery chord and upload merged outputs."""
 
@@ -867,7 +888,11 @@ def orchestrate_pdf_processing(
                     processor=processor,
                     s3_service=s3_service,
                     webhook_service=self.webhook_service,
-                    routing_options=_get_task_routing_options(self),
+                    routing_options=_get_child_task_routing_options(
+                        self,
+                        processing_queue=processing_queue,
+                        processing_priority=processing_priority,
+                    ),
                 )
             )
 
