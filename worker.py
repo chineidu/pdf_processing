@@ -3,7 +3,6 @@ import sys
 from typing import Any
 
 import numpy as np
-import torch
 
 from src import create_logger
 from src.celery_app.app import celery_app
@@ -24,31 +23,44 @@ def _set_pooltype_and_processes() -> tuple[PoolType, int]:
     tuple[PoolType, int]
         The selected pool type and number of processes.
     """
-    pool_env = os.environ.get("CELERY_POOL")
-    if pool_env and pool_env.lower() in ["prefork", "threads"]:
-        pool_type: PoolType = PoolType(pool_env.lower())
-        logger.info(f"Using pool type from environment: {pool_type.value}")
+    pool_env = os.environ.get("CELERY_POOL", "").strip().lower()
+    configured_pool_type: PoolType | None = None
+    if pool_env in [PoolType.PREFORK.value, PoolType.THREADS.value]:
+        configured_pool_type = PoolType(pool_env)
+        logger.info(f"Using pool type from environment: {configured_pool_type.value}")
 
-    # Determine number of processes and pool type based on hardware availability
-    if torch.cuda.is_available():
+    # Determine number of processes and pool type based on configured runtime mode.
+    # Avoid probing torch/cuda here because this runs in the main process before prefork.
+    if app_config.pdf_processing_config.use_gpu:
         # GPU: use threads pool (1 process) to avoid spawn/prefork conflicts with CUDA
         # Model is loaded once in the main process and shared across threads
-        pool_type = PoolType.THREADS
+        pool_type: PoolType = configured_pool_type or PoolType.THREADS
         num_processes: int = min(os.cpu_count() or 1, 4)
         logger.info(
-            f"🔥 GPU detected: using {pool_type.value!r} pool with {num_processes} concurrent threads"
+            f"🔥 GPU mode configured: using {pool_type.value!r} pool with {num_processes} concurrent threads"
         )
 
     else:
         # CPU-only: use prefork pool for parallelism and copy-on-write (COW) memory sharing
         # Each process loads model once; COW keeps ~800MB shared across processes
         # Expected memory per pod: ~1.0-1.2 GB (model 800MB + process overhead)
-        pool_type = PoolType.THREADS
+        pool_type = configured_pool_type or PoolType.PREFORK
         num_processes = min(os.cpu_count() or 1, app_settings.CELERY_CONCURRENCY)
         logger.info(
             f"🚨 CPU-only: using {pool_type.value!r} with {num_processes} processes for parallelism "
             "and memory efficiency (COW)"
         )
+
+    # macOS + prefork is unsafe with ObjC/MPS-backed libraries used by Docling/PyTorch.
+    # Keep prefork for Linux containers, but force threads locally on macOS.
+    if sys.platform == "darwin" and pool_type == PoolType.PREFORK:
+        logger.warning(
+            "macOS detected: overriding pool from 'prefork' to 'threads' to avoid "
+            "fork/ObjC crashes. Use Linux/Docker for prefork workers."
+        )
+        pool_type = PoolType.THREADS
+        num_processes = min(os.cpu_count() or 1, app_settings.CELERY_CONCURRENCY)
+
     return (pool_type, num_processes)
 
 
@@ -64,12 +76,15 @@ def _resolve_environment_variables() -> dict[str, Any]:
     # Accept overrides via environment variables for dynamic runs/containers.
     CELERY_LOGLEVEL: str = os.environ.get("CELERY_LOGLEVEL", "warning")
     # `CONCURRENCY` overrides the computed `num_processes`/threads when provided
-    concurrency_env: str = os.environ.get("CELERY_CONCURRENCY", default="2").strip()
-    concurrency: int = (
-        min(2, int(concurrency_env))
-        if concurrency_env and concurrency_env.isdigit()
-        else num_processes
-    )
+    concurrency_env: str = os.environ.get("CELERY_CONCURRENCY", "").strip()
+    concurrency: int = num_processes
+    if concurrency_env:
+        if concurrency_env.isdigit() and int(concurrency_env) > 0:
+            concurrency = int(concurrency_env)
+        else:
+            logger.warning(
+                f"Ignoring invalid CELERY_CONCURRENCY={concurrency_env!r}; using {num_processes}"
+            )
     # `QUEUES` should be a comma-separated list if provided, otherwise use configured queues
     default_queues: tuple[str, ...] = (
         app_config.queue_config.low_priority_ml,
@@ -106,8 +121,15 @@ def run_worker() -> None:
     CELERY_HOSTNAME_SUFFIX: str = env_vars["CELERY_HOSTNAME_SUFFIX"]
 
     try:
+        # Expose effective pool type to signal handlers.
+        os.environ["CELERY_POOL"] = pool_type.value
+
         logger.info("Database initialized successfully.")
-        log_system_info()
+        # On macOS + prefork, avoid GPU probing in parent process before fork.
+        include_gpu_probe = not (
+            sys.platform == "darwin" and pool_type == PoolType.PREFORK
+        )
+        log_system_info(include_gpu=include_gpu_probe)
 
         # Configure worker arguments (respect environment overrides)
         argv: list[str] = [
